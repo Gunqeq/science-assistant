@@ -1,0 +1,978 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ระบบสารสนเทศนิสิต - มหาวิทยาลัยเกษตรศาสตร์</title>
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='img/logo.png') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Sarabun', 'Sukhumvit Set', 'Thonburi', sans-serif;
+            background: #f5f5f5;
+            min-height: 100vh;
+        }
+
+        /* Header */
+        .header {
+            background: linear-gradient(135deg, #1a5f3f 0%, #2d8659 100%);
+            color: white;
+            padding: 0;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+
+        .top-bar {
+            background: #0d3d28;
+            padding: 8px 0;
+            font-size: 0.85rem;
+        }
+
+        .top-bar-content {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 0 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .user-info {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .user-avatar {
+            width: 28px;
+            height: 28px;
+            background: white;
+            color: #1a5f3f;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 600;
+            font-size: 0.8rem;
+        }
+
+        .main-header {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 15px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .logo-section {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .ku-logo {
+            width: 50px;
+            height: 50px;
+            background: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #1a5f3f;
+            font-size: 1.5rem;
+            font-weight: bold;
+            overflow: hidden;
+        }
+
+        .ku-logo img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            object-position: center;
+        }
+
+        .header-text h1 {
+            font-size: 1.3rem;
+            font-weight: 600;
+            margin-bottom: 2px;
+        }
+
+        .header-text p {
+            font-size: 0.9rem;
+            opacity: 0.95;
+        }
+
+        .header-actions {
+            display: flex;
+            gap: 10px;
+        }
+
+        .header-btn {
+            padding: 8px 15px;
+            background: rgba(255,255,255,0.15);
+            border: 1px solid rgba(255,255,255,0.3);
+            color: white;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-size: 0.9rem;
+        }
+
+        .header-btn:hover {
+            background: rgba(255,255,255,0.25);
+        }
+
+        /* Main Layout */
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+            display: grid;
+            grid-template-columns: 1fr 380px;
+            gap: 20px;
+        }
+
+        /* Chat Section */
+        .chat-section {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            display: flex;
+            flex-direction: column;
+            height: calc(100vh - 180px);
+        }
+
+        .chat-header {
+            padding: 15px 20px;
+            border-bottom: 1px solid #e5e7eb;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .chat-title {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: #1a5f3f;
+            font-size: 1.1rem;
+            font-weight: 600;
+        }
+
+        .chat-messages {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+            background: #fafafa;
+        }
+
+        .welcome-screen {
+            text-align: center;
+            padding: 60px 20px;
+        }
+
+        .welcome-icon {
+            font-size: 3.5rem;
+            color: #1a5f3f;
+            margin-bottom: 20px;
+        }
+
+        .welcome-screen h3 {
+            color: #1a5f3f;
+            font-size: 1.4rem;
+            margin-bottom: 10px;
+        }
+
+        .welcome-screen p {
+            color: #6b7280;
+            line-height: 1.6;
+        }
+
+        .message {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 16px;
+            animation: slideIn 0.3s ease;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .message.user {
+            justify-content: flex-end;
+        }
+
+        .message.user > div:last-child {
+            order: -1;
+            margin-left: auto;
+        }
+
+        .message-avatar {
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            font-weight: 600;
+        }
+
+        .bot .message-avatar {
+            background: #1a5f3f;
+            color: white;
+            font-size: 1.2rem;
+        }
+
+        .user .message-avatar {
+            background: linear-gradient(135deg, #3b82f6 0%, #1e40af 100%);
+            color: white;
+            font-size: 1.2rem;
+        }
+
+        .message-content {
+            max-width: 75%;
+            background: #f8f9fa;
+            padding: 12px 16px;
+            border-radius: 14px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.08);
+            line-height: 1.5;
+            word-wrap: break-word;
+            font-size: 0.95rem;
+            color: #1f2937;
+        }
+
+        /* สำหรับ HTML content ใน message */
+        .message-content a {
+            color: #3b82f6;
+            text-decoration: none;
+            font-weight: 600;
+            border-bottom: 1px solid #3b82f6;
+            transition: all 0.2s;
+        }
+
+        .message-content a:hover {
+            color: #1d4ed8;
+            background-color: rgba(59, 130, 246, 0.1);
+        }
+
+        .message-content ul, .message-content ol {
+            margin: 8px 0;
+            padding-left: 20px;
+        }
+
+        .message-content li {
+            margin: 4px 0;
+        }
+
+        .message-content strong {
+            font-weight: 600;
+            color: #111827;
+        }
+
+        .message-content p {
+            margin: 8px 0;
+        }
+
+        .user .message-content {
+            background: #1a5f3f;
+            color: white;
+            border-bottom-right-radius: 4px;
+            font-weight: 500;
+            max-width: 100%;
+        }
+
+        .bot .message-content {
+            border-bottom-left-radius: 4px;
+        }
+
+        .message-time {
+            font-size: 0.7rem;
+            color: #9ca3af;
+            margin-top: 4px;
+            text-align: right;
+        }
+
+        .user .message-time {
+            color: rgba(255, 255, 255, 0.6);
+            text-align: right;
+            margin-right: 12px;
+        }
+
+        .typing-indicator {
+            display: none;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .typing-indicator.active {
+            display: flex;
+        }
+
+        .typing-dots {
+            background: white;
+            padding: 12px 18px;
+            border-radius: 12px;
+            display: flex;
+            gap: 5px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+
+        .dot {
+            width: 8px;
+            height: 8px;
+            background: #9ca3af;
+            border-radius: 50%;
+            animation: bounce 1.4s infinite ease-in-out;
+        }
+
+        .dot:nth-child(1) { animation-delay: -0.32s; }
+        .dot:nth-child(2) { animation-delay: -0.16s; }
+
+        @keyframes bounce {
+            0%, 80%, 100% { transform: scale(0); }
+            40% { transform: scale(1); }
+        }
+
+        .chat-input {
+            padding: 16px 20px;
+            border-top: 1px solid #e5e7eb;
+            background: white;
+        }
+
+        .input-wrapper {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            background: #f3f4f6;
+            padding: 10px 14px;
+            border-radius: 10px;
+            border: 2px solid #e5e7eb;
+            transition: all 0.3s;
+        }
+
+        .input-wrapper:focus-within {
+            border-color: #1a5f3f;
+            background: white;
+            box-shadow: 0 0 0 3px rgba(26, 95, 63, 0.1);
+        }
+
+        .input-wrapper input {
+            flex: 1;
+            border: none;
+            background: transparent;
+            padding: 10px 4px;
+            font-size: 0.95rem;
+            outline: none;
+            font-family: inherit;
+            color: #1f2937;
+        }
+
+        .input-wrapper input::placeholder {
+            color: #9ca3af;
+        }
+
+        .send-btn {
+            width: 40px;
+            height: 40px;
+            background: linear-gradient(135deg, #1a5f3f 0%, #2d8659 100%);
+            border: none;
+            border-radius: 8px;
+            color: white;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s;
+            font-size: 1.1rem;
+        }
+
+        .send-btn:hover {
+            background: linear-gradient(135deg, #0d3d28 0%, #1a5f3f 100%);
+            transform: scale(1.05);
+            box-shadow: 0 4px 12px rgba(26, 95, 63, 0.3);
+        }
+
+        .send-btn:active {
+            transform: scale(0.98);
+        }
+
+        /* Sidebar */
+        .sidebar {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .card {
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            overflow: hidden;
+        }
+
+        .card-header {
+            padding: 15px 20px;
+            background: linear-gradient(135deg, #1a5f3f 0%, #2d8659 100%);
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .card-title {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-weight: 600;
+            font-size: 1rem;
+        }
+
+        .card-content {
+            padding: 15px;
+            max-height: 500px;
+            overflow-y: auto;
+        }
+
+        .search-box {
+            padding: 10px 15px;
+            background: rgba(255,255,255,0.15);
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        .search-box input {
+            flex: 1;
+            background: transparent;
+            border: none;
+            color: white;
+            outline: none;
+        }
+
+        .search-box input::placeholder {
+            color: rgba(255,255,255,0.8);
+        }
+
+        .category-section {
+            margin-bottom: 25px;
+        }
+
+        .category-section:last-child {
+            margin-bottom: 0;
+        }
+
+        .category-title {
+            color: #1a5f3f;
+            font-size: 0.95rem;
+            font-weight: 600;
+            margin-bottom: 12px;
+            padding: 8px 12px;
+            background: #f0fdf4;
+            border-left: 3px solid #1a5f3f;
+            border-radius: 4px;
+        }
+
+        .pdf-item {
+            background: white;
+            padding: 12px 14px;
+            border-radius: 8px;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            cursor: pointer;
+            transition: all 0.3s;
+            border: 1px solid #e5e7eb;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        }
+
+        .pdf-item:hover {
+            background: #f0fdf4;
+            border-color: #1a5f3f;
+            transform: translateX(5px);
+            box-shadow: 0 2px 6px rgba(26, 95, 63, 0.15);
+        }
+
+        .pdf-item:active {
+            transform: translateX(3px);
+        }
+
+        .pdf-icon {
+            width: 40px;
+            height: 40px;
+            background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%);
+            color: #dc2626;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            font-size: 1.2rem;
+        }
+
+        .pdf-info {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .pdf-name {
+            color: #1f2937;
+            font-size: 0.875rem;
+            font-weight: 500;
+            line-height: 1.3;
+            margin-bottom: 3px;
+        }
+
+        .pdf-category {
+            color: #6b7280;
+            font-size: 0.75rem;
+            display: inline-block;
+            background: #f3f4f6;
+            padding: 2px 8px;
+            border-radius: 4px;
+        }
+
+        .download-icon {
+            color: #1a5f3f;
+            font-size: 1.1rem;
+            transition: all 0.3s;
+        }
+
+        .pdf-item:hover .download-icon {
+            transform: translateY(-2px);
+        }
+
+        .quick-links {
+            display: grid;
+            gap: 8px;
+        }
+
+        .quick-link {
+            padding: 12px 15px;
+            background: #f9fafb;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            cursor: pointer;
+            transition: all 0.3s;
+            border: 1px solid #e5e7eb;
+        }
+
+        .quick-link:hover {
+            background: #f0fdf4;
+            border-color: #1a5f3f;
+            transform: translateX(3px);
+        }
+
+        .quick-link-icon {
+            width: 36px;
+            height: 36px;
+            background: #dcfce7;
+            color: #1a5f3f;
+            border-radius: 6px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .quick-link-text {
+            flex: 1;
+        }
+
+        .quick-link-title {
+            color: #1f2937;
+            font-size: 0.9rem;
+            font-weight: 500;
+        }
+
+        .quick-link-desc {
+            color: #6b7280;
+            font-size: 0.75rem;
+            margin-top: 2px;
+        }
+
+        /* Responsive */
+        @media (max-width: 1024px) {
+            .container {
+                grid-template-columns: 1fr;
+            }
+
+            .sidebar {
+                order: -1;
+            }
+
+            .chat-section {
+                height: 500px;
+            }
+        }
+
+        @media (max-width: 768px) {
+            .header-text h1 {
+                font-size: 1rem;
+            }
+
+            .header-text p {
+                font-size: 0.8rem;
+            }
+
+            .top-bar-content {
+                flex-direction: column;
+                gap: 5px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Header -->
+    <header class="header">
+        <div class="top-bar">
+            <div class="top-bar-content">
+                <div class="user-info">
+                    <div class="user-avatar">N</div>
+                    <span>นิสิต: สมชาย ใจดี | รหัส: 66xxxxxxxx</span>
+                </div>
+                <div>
+                    <i class="far fa-clock"></i>
+                    <span id="current-time"></span>
+                </div>
+            </div>
+        </div>
+        <div class="main-header">
+            <div class="logo-section">
+                <div class="ku-logo">
+                    <img src="{{ url_for('static', filename='img/logo.png') }}" alt="Logo KU">
+                </div>
+                <div class="header-text">
+                    <h1>ระบบสารสนเทศนิสิต</h1>
+                    <p>คณะวิทยาศาสตร์ มหาวิทยาลัยเกษตรศาสตร์</p>
+                </div>
+            </div>
+            <div class="header-actions">
+                <button class="header-btn">
+                    <i class="fas fa-bell"></i>
+                </button>
+                <button class="header-btn">
+                    <i class="fas fa-cog"></i>
+                </button>
+                <button class="header-btn" onclick="window.location.href='/'">
+                    <i class="fas fa-sign-out-alt"></i> ออกจากระบบ
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <div class="container">
+        <!-- Chat Section -->
+        <div class="chat-section">
+            <div class="chat-header">
+                <div class="chat-title">
+                    <i class="fas fa-comments"></i>
+                    ผู้ช่วยอัจฉริยะ Science Assistant
+                </div>
+                <div style="font-size: 0.85rem; color: #6b7280;">
+                    <i class="fas fa-circle" style="color: #22c55e; font-size: 0.6rem;"></i>
+                    พร้อมให้บริการ
+                </div>
+            </div>
+
+            <div class="chat-messages" id="chat-messages">
+                <div class="welcome-screen">
+                    <div class="welcome-icon">
+                        <i class="fas fa-robot"></i>
+                    </div>
+                    <h3>ยินดีต้อนรับเข้าสู่ระบบช่วยเหลือนิสิต</h3>
+                    <p>ผมพร้อมช่วยเหลือคุณเกี่ยวกับเอกสาร การลงทะเบียน<br>และข้อมูลต่างๆ ของคณะวิทยาศาสตร์ครับ</p>
+                </div>
+
+                <div class="typing-indicator" id="typing-indicator">
+                    <div class="message-avatar" style="background: #1a5f3f; color: white;">
+                        <i class="fas fa-robot"></i>
+                    </div>
+                    <div class="typing-dots">
+                        <div class="dot"></div>
+                        <div class="dot"></div>
+                        <div class="dot"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="chat-input">
+                <form class="input-wrapper" id="chat-form">
+                    <input 
+                        type="text" 
+                        id="user-input" 
+                        placeholder="พิมพ์คำถามหรือข้อความของคุณ..."
+                        autocomplete="off"
+                    >
+                    <button type="submit" class="send-btn">
+                        <i class="fas fa-paper-plane"></i>
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <!-- Quick Links -->
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">
+                        <i class="fas fa-link"></i>
+                        ทางลัด
+                    </div>
+                </div>
+                <div class="card-content quick-links">
+                    <a href="https://my.ku.th/myku/myku?intent=/" target="_blank" style="text-decoration: none;">
+                        <div class="quick-link">
+                            <div class="quick-link-icon">
+                                <i class="fas fa-desktop"></i>
+                            </div>
+                            <div class="quick-link-text">
+                                <div class="quick-link-title">MyKU</div>
+                                <div class="quick-link-desc">เข้าสู่ระบบ MyKU</div>
+                            </div>
+                            <i class="fas fa-chevron-right" style="color: #9ca3af;"></i>
+                        </div>
+                    </a>
+                    <a href="https://sci.src.ku.ac.th/" target="_blank" style="text-decoration: none;">
+                        <div class="quick-link">
+                            <div class="quick-link-icon">
+                                <i class="fas fa-flask"></i>
+                            </div>
+                            <div class="quick-link-text">
+                                <div class="quick-link-title">เว็บคณะวิทยาศาสตร์</div>
+                                <div class="quick-link-desc">ไปหน้าเว็บคณะ</div>
+                            </div>
+                            <i class="fas fa-chevron-right" style="color: #9ca3af;"></i>
+                        </div>
+                    </a>
+                </div>
+            </div>
+
+            <!-- Downloads -->
+            <div class="card">
+                <div class="card-header">
+                    <div class="card-title">
+                        <i class="fas fa-file-download"></i>
+                        เอกสารดาวน์โหลด
+                    </div>
+                </div>
+                <div class="card-content">
+                    <div class="search-box" style="margin: 0 0 15px 0; padding: 10px 15px; background: #f9fafb; border-radius: 6px; border: 1px solid #e5e7eb;">
+                        <i class="fas fa-search" style="color: #6b7280;"></i>
+                        <input 
+                            type="text" 
+                            id="search-pdf" 
+                            placeholder="ค้นหาเอกสาร..."
+                            onkeyup="searchPDF()"
+                            style="flex: 1; border: none; background: transparent; outline: none; color: #1f2937;"
+                        >
+                    </div>
+                    <div id="downloads-content">
+                        <!-- PDFs will be loaded here -->
+                    </div>
+                </div>
+            </div>
+        </aside>
+    </div>
+
+    <script>
+        // PDF Data - from backend
+        let pdfData = [];
+
+        // Group PDFs
+        function groupByCategory(pdfs) {
+            const grouped = {};
+            pdfs.forEach(pdf => {
+                if (!grouped[pdf.category]) {
+                    grouped[pdf.category] = [];
+                }
+                grouped[pdf.category].push(pdf);
+            });
+            return grouped;
+        }
+
+        // Display PDFs
+        function displayPDFs(pdfs = pdfData) {
+            const content = document.getElementById('downloads-content');
+            const grouped = groupByCategory(pdfs);
+            
+            let html = '';
+            for (const [category, files] of Object.entries(grouped)) {
+                html += `
+                    <div class="category-section">
+                        <div class="category-title">${category}</div>
+                        ${files.map(pdf => `
+                            <div class="pdf-item" onclick="downloadPDF('${pdf.name}', ${pdf.id})">
+                                <div class="pdf-icon">
+                                    <i class="fas fa-file-pdf"></i>
+                                </div>
+                                <div class="pdf-info">
+                                    <div class="pdf-name">${pdf.name}</div>
+                                    <div class="pdf-category">${category}</div>
+                                </div>
+                                <div class="download-icon">
+                                    <i class="fas fa-download"></i>
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                `;
+            }
+            
+            content.innerHTML = html || '<p style="text-align: center; color: #6b7280; padding: 20px;">ไม่พบเอกสาร</p>';
+        }
+
+        // Search PDFs
+        function searchPDF() {
+            const keyword = document.getElementById('search-pdf').value.toLowerCase();
+            if (keyword.length < 2) {
+                displayPDFs();
+                return;
+            }
+            
+            const filtered = pdfData.filter(pdf => 
+                pdf.name.toLowerCase().includes(keyword) || 
+                pdf.category.toLowerCase().includes(keyword)
+            );
+            displayPDFs(filtered);
+        }
+
+        // Download PDF
+        function downloadPDF(filename, id) {
+            window.location.href = `/download/${id}`;
+            addMessage(`กำลังดาวน์โหลดไฟล์: ${filename}`, false);
+        }
+
+        // Load documents from backend
+        function loadDocuments() {
+            fetch('/api/documents')
+                .then(response => response.json())
+                .then(data => {
+                    pdfData = data;
+                    displayPDFs();
+                })
+                .catch(error => {
+                    console.error('Error loading documents:', error);
+                    addMessage('ไม่สามารถโหลดเอกสาร กรุณาลองใหม่', false);
+                });
+        }
+
+        // Chat functionality
+        const chatMessages = document.getElementById('chat-messages');
+        const chatForm = document.getElementById('chat-form');
+        const userInput = document.getElementById('user-input');
+        const typingIndicator = document.getElementById('typing-indicator');
+
+        function scrollToBottom() {
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        function getCurrentTime() {
+            const now = new Date();
+            return now.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+        }
+
+        function escapeHtml(text) {
+            const map = {
+                '&': '&amp;',
+                '<': '&lt;',
+                '>': '&gt;',
+                '"': '&quot;',
+                "'": '&#039;'
+            };
+            return text.replace(/[&<>"']/g, m => map[m]);
+        }
+
+        function formatMessage(text) {
+            // ถ้าข้อความมี HTML tags ให้ใช้โดยตรง (สำหรับการตัวอักษรสะดวกสบาย)
+            if (/<[^>]*>/.test(text)) {
+                return text; // เก็บ HTML ตามเดิม
+            }
+            // ถ้าเป็นข้อความธรรมดา ให้ escape และแปลง line breaks
+            text = escapeHtml(text);
+            text = text.replace(/\n/g, '<br>');
+            return text;
+        }
+
+        function addMessage(message, isUser = false) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${isUser ? 'user' : 'bot'}`;
+            
+            messageDiv.innerHTML = `
+                <div class="message-avatar">
+                    <i class="fas fa-${isUser ? 'user' : 'robot'}"></i>
+                </div>
+                <div>
+                    <div class="message-content">${formatMessage(message)}</div>
+                    <div class="message-time">${getCurrentTime()}</div> 
+                </div>
+            `; 
+            chatMessages.appendChild(messageDiv);
+            scrollToBottom();
+        }
+
+        // Handle chat form submission
+        chatForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const message = userInput.value.trim();
+            
+            if (!message) return;
+            
+            // Add user message to chat
+            addMessage(message, true);
+            userInput.value = '';
+            
+            // Show typing indicator
+            typingIndicator.style.display = 'flex';
+            
+            try {
+                const response = await fetch('/chat', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ message: message })
+                });
+                
+                const data = await response.json();
+                typingIndicator.style.display = 'none';
+                
+                if (response.ok) {
+                    addMessage(data.response, false);
+                } else {
+                    addMessage('ขออภัยครับ เกิดข้อผิดพลาด', false);
+                }
+            } catch (error) {
+                typingIndicator.style.display = 'none';
+                console.error('Error:', error);
+                addMessage('ขออภัยครับ ไม่สามารถเชื่อมต่อได้', false);
+            }
+        });
+
+        // Initialize on page load
+        window.addEventListener('DOMContentLoaded', function() {
+            loadDocuments();
+        });
+    </script>
+</body>
+</html>
