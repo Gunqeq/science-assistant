@@ -26,9 +26,7 @@ app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
         "timeout": 60,
         "check_same_thread": False,
     },
-    "pool_pre_ping": True,
-    "pool_size": 1,          # SQLite รองรับ 1 connection เท่านั้น
-    "max_overflow": 0,
+    "pool_class": __import__("sqlalchemy.pool", fromlist=["StaticPool"]).StaticPool,
 }
 app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "sciKU-secret-2024")
 db = SQLAlchemy(app)
