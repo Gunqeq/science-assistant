@@ -111,7 +111,7 @@ def run_scrape(trigger="auto"):
                 else:
                     db.session.add(ScrapedPage(url=item["source"], category=item["category"], content=item["content"]))
             db.session.commit()
-            log = ScrapeLog.query.get(log_id)
+            log = db.session.get(ScrapeLog, log_id)
             log.pages = len(data)
             log.finished_at = datetime.utcnow()
             log.status = "done"
@@ -506,7 +506,15 @@ def initialize_app():
         count = ScrapedPage.query.count()
         if count == 0:
             print("[Startup] DB ว่าง → scrape ทันที")
-            scrape_in_background(trigger="startup")
+            # บน production (Render) ให้ delay scrape 30 วิ รอ DB พร้อมก่อน
+            is_production = os.environ.get("FLASK_ENV") == "production"
+            if is_production:
+                def delayed_scrape():
+                    time.sleep(30)
+                    run_scrape("startup")
+                threading.Thread(target=delayed_scrape, daemon=True).start()
+            else:
+                scrape_in_background(trigger="startup")
         else:
             print(f"[Startup] DB มี {count} หน้า → โหลดจาก DB ข้าม scrape")
             load_context_from_db()
