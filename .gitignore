@@ -1,0 +1,25 @@
+# Environment variables (ห้าม push ขึ้น GitHub เด็ดขาด)
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Database (เก็บ local เท่านั้น)
+instance/
+*.db
+*.sqlite3
+
+# eval results
+eval_results.json
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

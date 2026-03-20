@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: science-assistant
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn test:app --bind 0.0.0.0:$PORT --workers 1 --timeout 120
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: ADMIN_USERNAME
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: SECRET_KEY
+        sync: false

@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Admin Dashboard — Science Assistant</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Sarabun',sans-serif;background:#f3f4f6;color:#1f2937}
+/* Sidebar */
+.sidebar{position:fixed;left:0;top:0;width:220px;height:100vh;background:linear-gradient(160deg,#1a5f3f,#2d8659);color:white;display:flex;flex-direction:column;z-index:100}
+.sidebar-logo{padding:24px 20px;border-bottom:1px solid rgba(255,255,255,.15)}
+.sidebar-logo h2{font-size:1rem;font-weight:700}
+.sidebar-logo p{font-size:.75rem;opacity:.8;margin-top:2px}
+.nav-item{display:flex;align-items:center;gap:12px;padding:12px 20px;cursor:pointer;transition:.2s;font-size:.9rem;text-decoration:none;color:white}
+.nav-item:hover,.nav-item.active{background:rgba(255,255,255,.15)}
+.nav-item i{width:18px;text-align:center}
+.sidebar-footer{margin-top:auto;padding:16px 20px;border-top:1px solid rgba(255,255,255,.15)}
+.logout-btn{display:flex;align-items:center;gap:10px;color:rgba(255,255,255,.8);text-decoration:none;font-size:.875rem}
+.logout-btn:hover{color:white}
+/* Main */
+.main{margin-left:220px;min-height:100vh}
+.topbar{background:white;padding:16px 28px;border-bottom:1px solid #e5e7eb;display:flex;justify-content:space-between;align-items:center;box-shadow:0 1px 3px rgba(0,0,0,.05)}
+.topbar h1{font-size:1.2rem;color:#1a5f3f;font-weight:700}
+.page{display:none;padding:28px}
+.page.active{display:block}
+/* Stat cards */
+.stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px}
+.stat-card{background:white;border-radius:10px;padding:20px;box-shadow:0 1px 4px rgba(0,0,0,.07);display:flex;align-items:center;gap:16px}
+.stat-icon{width:48px;height:48px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:1.3rem;flex-shrink:0}
+.stat-icon.green{background:#dcfce7;color:#16a34a}
+.stat-icon.blue{background:#dbeafe;color:#2563eb}
+.stat-icon.purple{background:#ede9fe;color:#7c3aed}
+.stat-icon.orange{background:#ffedd5;color:#ea580c}
+.stat-value{font-size:1.8rem;font-weight:700;color:#111827}
+.stat-label{font-size:.8rem;color:#6b7280;margin-top:2px}
+/* Charts / tables */
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px}
+.card{background:white;border-radius:10px;padding:20px;box-shadow:0 1px 4px rgba(0,0,0,.07)}
+.card-title{font-size:1rem;font-weight:600;color:#1a5f3f;margin-bottom:16px;display:flex;align-items:center;gap:8px}
+table{width:100%;border-collapse:collapse;font-size:.875rem}
+th{text-align:left;padding:10px 12px;background:#f9fafb;color:#374151;font-weight:600;border-bottom:2px solid #e5e7eb}
+td{padding:10px 12px;border-bottom:1px solid #f3f4f6;color:#374151}
+tr:hover td{background:#f9fafb}
+/* Badge */
+.badge{display:inline-block;padding:2px 10px;border-radius:99px;font-size:.75rem;font-weight:600}
+.badge.done{background:#dcfce7;color:#16a34a}
+.badge.running{background:#dbeafe;color:#2563eb}
+.badge.error{background:#fee2e2;color:#dc2626}
+/* Buttons */
+.btn{display:inline-flex;align-items:center;gap:8px;padding:9px 18px;border-radius:7px;font-size:.875rem;font-weight:600;cursor:pointer;border:none;transition:.2s}
+.btn-primary{background:linear-gradient(135deg,#1a5f3f,#2d8659);color:white}
+.btn-primary:hover{opacity:.9}
+.btn-danger{background:#fee2e2;color:#dc2626}
+.btn-danger:hover{background:#fecaca}
+.btn-export{background:#f0fdf4;color:#16a34a;border:1px solid #bbf7d0}
+/* Scrape status */
+.scrape-status{display:flex;align-items:center;gap:8px;padding:12px 16px;background:#f9fafb;border-radius:8px;border:1px solid #e5e7eb;margin-bottom:16px}
+/* Pagination */
+.pagination{display:flex;gap:6px;margin-top:16px;justify-content:center}
+.page-btn{padding:6px 14px;border-radius:6px;border:1px solid #e5e7eb;background:white;cursor:pointer;font-size:.85rem;transition:.2s}
+.page-btn:hover,.page-btn.active{background:#1a5f3f;color:white;border-color:#1a5f3f}
+/* Search */
+.search-bar{display:flex;gap:10px;margin-bottom:16px}
+.search-bar input{flex:1;padding:9px 14px;border:1px solid #e5e7eb;border-radius:7px;font-size:.875rem;outline:none;font-family:inherit}
+.search-bar input:focus{border-color:#1a5f3f}
+/* Top questions list */
+.top-q-item{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #f3f4f6}
+.top-q-rank{width:26px;height:26px;border-radius:50%;background:#f0fdf4;color:#1a5f3f;font-size:.8rem;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.top-q-text{flex:1;font-size:.875rem;color:#374151}
+.top-q-count{font-size:.8rem;font-weight:600;color:#6b7280}
+@media(max-width:900px){.stat-grid{grid-template-columns:1fr 1fr}.grid-2{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+
+<!-- Sidebar -->
+<nav class="sidebar">
+  <div class="sidebar-logo">
+    <h2><i class="fas fa-robot"></i> Science Assistant</h2>
+    <p>Admin Dashboard</p>
+  </div>
+  <a class="nav-item active" onclick="showPage('overview')" href="#">
+    <i class="fas fa-chart-pie"></i> ภาพรวม
+  </a>
+  <a class="nav-item" onclick="showPage('chatlogs')" href="#">
+    <i class="fas fa-comments"></i> ประวัติแชท
+  </a>
+  <a class="nav-item" onclick="showPage('scraper')" href="#">
+    <i class="fas fa-sync-alt"></i> จัดการ Scraper
+  </a>
+  <div class="sidebar-footer">
+    <a href="/admin/logout" class="logout-btn">
+      <i class="fas fa-sign-out-alt"></i> ออกจากระบบ
+    </a>
+  </div>
+</nav>
+
+<!-- Main Content -->
+<div class="main">
+  <div class="topbar">
+    <h1 id="page-title"><i class="fas fa-chart-pie"></i> ภาพรวมระบบ</h1>
+    <span style="font-size:.85rem;color:#6b7280;" id="last-update"></span>
+  </div>
+
+  <!-- Overview Page -->
+  <div class="page active" id="page-overview">
+    <div class="stat-grid">
+      <div class="stat-card">
+        <div class="stat-icon green"><i class="fas fa-comments"></i></div>
+        <div>
+          <div class="stat-value" id="stat-total">—</div>
+          <div class="stat-label">แชทสะสมทั้งหมด</div>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon blue"><i class="fas fa-calendar-day"></i></div>
+        <div>
+          <div class="stat-value" id="stat-today">—</div>
+          <div class="stat-label">แชทวันนี้</div>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon purple"><i class="fas fa-users"></i></div>
+        <div>
+          <div class="stat-value" id="stat-sessions">—</div>
+          <div class="stat-label">Sessions ทั้งหมด</div>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon orange"><i class="fas fa-database"></i></div>
+        <div>
+          <div class="stat-value" id="stat-pages">—</div>
+          <div class="stat-label">หน้าใน Knowledge Base</div>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon green"><i class="fas fa-star"></i></div>
+        <div>
+          <div class="stat-value" id="stat-satisfaction">—</div>
+          <div class="stat-label">ความพึงพอใจ (<span id="stat-fb-total">0</span> ความคิดเห็น)</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-title"><i class="fas fa-chart-bar"></i> แชทย้อนหลัง 7 วัน</div>
+        <canvas id="dailyChart" height="180"></canvas>
+      </div>
+      <div class="card">
+        <div class="card-title"><i class="fas fa-fire"></i> คำถามยอดนิยม Top 10</div>
+        <div id="top-questions"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Chat Logs Page -->
+  <div class="page" id="page-chatlogs">
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+        <div class="card-title" style="margin:0"><i class="fas fa-list"></i> ประวัติการสนทนา</div>
+        <a href="/api/admin/chatlogs/export" class="btn btn-export">
+          <i class="fas fa-download"></i> Export CSV
+        </a>
+      </div>
+      <div class="search-bar">
+        <input type="text" id="log-search" placeholder="ค้นหาคำถาม..." oninput="filterLogs()">
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>เวลา</th>
+            <th>Session</th>
+            <th>คำถาม</th>
+            <th>คำตอบ (ย่อ)</th>
+          </tr>
+        </thead>
+        <tbody id="log-table"></tbody>
+      </table>
+      <div class="pagination" id="log-pagination"></div>
+    </div>
+  </div>
+
+  <!-- Scraper Page -->
+  <div class="page" id="page-scraper">
+    <div class="card" style="margin-bottom:16px;">
+      <div class="card-title"><i class="fas fa-info-circle"></i> สถานะ Knowledge Base</div>
+      <div class="scrape-status" id="scrape-current-status">
+        <i class="fas fa-spinner fa-spin"></i> กำลังโหลด...
+      </div>
+      <button class="btn btn-primary" onclick="triggerScrape()" id="scrape-btn">
+        <i class="fas fa-sync-alt"></i> Scrape ข้อมูลใหม่ทันที
+      </button>
+    </div>
+    <div class="card">
+      <div class="card-title"><i class="fas fa-history"></i> ประวัติการ Scrape ล่าสุด</div>
+      <table>
+        <thead>
+          <tr><th>#</th><th>เริ่ม</th><th>เสร็จ</th><th>หน้า</th><th>Trigger</th><th>Status</th></tr>
+        </thead>
+        <tbody id="scrape-log-table"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+let allLogs = [], currentPage = 1, chartInstance = null;
+
+// ── Navigation ─────────────────────────
+const pageTitles = {
+  overview: '<i class="fas fa-chart-pie"></i> ภาพรวมระบบ',
+  chatlogs: '<i class="fas fa-comments"></i> ประวัติการสนทนา',
+  scraper:  '<i class="fas fa-sync-alt"></i> จัดการ Scraper',
+};
+function showPage(name) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.getElementById('page-' + name).classList.add('active');
+  document.querySelectorAll('.nav-item')[['overview','chatlogs','scraper'].indexOf(name)].classList.add('active');
+  document.getElementById('page-title').innerHTML = pageTitles[name];
+  if (name === 'chatlogs' && allLogs.length === 0) loadLogs(1);
+  if (name === 'scraper') loadScraperStatus();
+}
+
+// ── Load Overview Stats ─────────────────
+async function loadStats() {
+  try {
+    const r = await fetch('/api/admin/stats');
+    const d = await r.json();
+    document.getElementById('stat-total').textContent    = d.total_chats.toLocaleString();
+    document.getElementById('stat-today').textContent    = d.today_chats.toLocaleString();
+    document.getElementById('stat-sessions').textContent = d.total_sessions.toLocaleString();
+    document.getElementById('stat-pages').textContent    = d.scraped_pages.toLocaleString();
+    document.getElementById('stat-satisfaction').textContent = d.satisfaction !== null ? d.satisfaction + '%' : 'ยังไม่มี';
+    document.getElementById('stat-fb-total').textContent    = d.feedback_total || 0;
+    document.getElementById('last-update').textContent   = 'อัปเดต: ' + new Date().toLocaleTimeString('th-TH');
+    drawChart(d.daily_chart);
+    renderTopQuestions(d.top_questions);
+  } catch(e) { console.error(e); }
+}
+
+function drawChart(data) {
+  const ctx = document.getElementById('dailyChart').getContext('2d');
+  if (chartInstance) chartInstance.destroy();
+  chartInstance = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: data.map(d => d.date),
+      datasets: [{
+        label: 'จำนวนแชท',
+        data: data.map(d => d.count),
+        backgroundColor: 'rgba(26,95,63,.7)',
+        borderRadius: 5,
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } }
+    }
+  });
+}
+
+function renderTopQuestions(questions) {
+  const el = document.getElementById('top-questions');
+  if (!questions.length) { el.innerHTML = '<p style="color:#9ca3af;text-align:center;padding:20px;">ยังไม่มีข้อมูล</p>'; return; }
+  el.innerHTML = questions.map((q, i) => `
+    <div class="top-q-item">
+      <div class="top-q-rank">${i+1}</div>
+      <div class="top-q-text">${q.question.length > 60 ? q.question.slice(0,60)+'...' : q.question}</div>
+      <div class="top-q-count">${q.count} ครั้ง</div>
+    </div>
+  `).join('');
+}
+
+// ── Chat Logs ───────────────────────────
+async function loadLogs(page = 1) {
+  currentPage = page;
+  const r = await fetch(`/api/admin/chatlogs?page=${page}`);
+  const d = await r.json();
+  allLogs = d.logs;
+  renderLogs(allLogs);
+  renderPagination(d.pages, page);
+}
+
+function renderLogs(logs) {
+  const tbody = document.getElementById('log-table');
+  if (!logs.length) { tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#9ca3af;padding:20px;">ไม่พบข้อมูล</td></tr>'; return; }
+  tbody.innerHTML = logs.map(l => `
+    <tr>
+      <td style="color:#9ca3af">${l.id}</td>
+      <td style="white-space:nowrap;font-size:.8rem">${l.timestamp}</td>
+      <td style="font-size:.75rem;color:#6b7280;font-family:monospace">${l.session_id.slice(0,12)}...</td>
+      <td>${l.user_message.length > 60 ? l.user_message.slice(0,60)+'...' : l.user_message}</td>
+      <td style="color:#6b7280">${l.bot_answer}</td>
+    </tr>
+  `).join('');
+}
+
+function filterLogs() {
+  const kw = document.getElementById('log-search').value.toLowerCase();
+  renderLogs(allLogs.filter(l => l.user_message.toLowerCase().includes(kw) || l.bot_answer.toLowerCase().includes(kw)));
+}
+
+function renderPagination(pages, current) {
+  const el = document.getElementById('log-pagination');
+  let html = '';
+  for (let i = 1; i <= pages; i++) {
+    html += `<button class="page-btn ${i===current?'active':''}" onclick="loadLogs(${i})">${i}</button>`;
+  }
+  el.innerHTML = html;
+}
+
+// ── Scraper ─────────────────────────────
+async function loadScraperStatus() {
+  const r = await fetch('/api/admin/stats');
+  const d = await r.json();
+  const s = d.last_scrape;
+  const color = s.status === 'done' ? '#16a34a' : s.status === 'error' ? '#dc2626' : '#2563eb';
+  document.getElementById('scrape-current-status').innerHTML = `
+    <i class="fas fa-circle" style="color:${color};font-size:.6rem"></i>
+    <strong>สถานะล่าสุด:</strong> ${s.status} &nbsp;|&nbsp;
+    <strong>อัปเดตล่าสุด:</strong> ${s.finished_at} &nbsp;|&nbsp;
+    <strong>จำนวนหน้า:</strong> ${s.pages} หน้า
+  `;
+  const tbody = document.getElementById('scrape-log-table');
+  tbody.innerHTML = d.scrape_logs.map(l => `
+    <tr>
+      <td>${l.id}</td>
+      <td style="font-size:.8rem">${l.started_at}</td>
+      <td style="font-size:.8rem">${l.finished_at}</td>
+      <td>${l.pages}</td>
+      <td><span style="font-size:.8rem;color:#6b7280">${l.trigger}</span></td>
+      <td><span class="badge ${l.status}">${l.status}</span></td>
+    </tr>
+  `).join('');
+}
+
+async function triggerScrape() {
+  const btn = document.getElementById('scrape-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> กำลัง Scrape...';
+  try {
+    await fetch('/admin/scrape', { method: 'POST' });
+    alert('เริ่ม Scrape ในพื้นหลังแล้วครับ กรุณารอสักครู่แล้วกด refresh');
+  } catch(e) { alert('เกิดข้อผิดพลาด'); }
+  setTimeout(() => {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="fas fa-sync-alt"></i> Scrape ข้อมูลใหม่ทันที';
+    loadScraperStatus();
+  }, 3000);
+}
+
+// ── Init ────────────────────────────────
+loadStats();
+setInterval(loadStats, 60000); // refresh ทุก 1 นาที
+</script>
+</body>
+</html>
