@@ -19,11 +19,16 @@ load_dotenv()
 # App & DB
 # ──────────────────────────────────────────
 app = Flask(__name__)
-app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///science_assistant.db?timeout=30&check_same_thread=False"
+app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///science_assistant.db"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
-    "connect_args": {"timeout": 30, "check_same_thread": False},
+    "connect_args": {
+        "timeout": 60,
+        "check_same_thread": False,
+    },
     "pool_pre_ping": True,
+    "pool_size": 1,          # SQLite รองรับ 1 connection เท่านั้น
+    "max_overflow": 0,
 }
 app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "sciKU-secret-2024")
 db = SQLAlchemy(app)
@@ -472,6 +477,17 @@ def initialize_app():
     with app.app_context():
         # Step 1: สร้าง table ใหม่ที่ยังไม่มี
         db.create_all()
+
+        # เปิด WAL mode — ให้ read/write พร้อมกันได้ (แก้ database is locked)
+        try:
+            from sqlalchemy import text
+            with db.engine.connect() as conn:
+                conn.execute(text("PRAGMA journal_mode=WAL"))
+                conn.execute(text("PRAGMA synchronous=NORMAL"))
+                conn.commit()
+            print("[DB] WAL mode enabled")
+        except Exception as e:
+            print(f"[DB] WAL setup error: {e}")
 
         # Step 2: Auto-migrate column ที่อาจขาดใน DB เก่า
         try:
