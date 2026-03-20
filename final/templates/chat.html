@@ -216,9 +216,17 @@
             justify-content: flex-end;
         }
 
-        .message.user > div:last-child {
-            order: -1;
-            margin-left: auto;
+        .message-wrapper {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .user .message-wrapper {
+            align-items: flex-end;
+        }
+
+        .bot .message-wrapper {
+            align-items: flex-start;
         }
 
         .message-avatar {
@@ -304,54 +312,142 @@
             font-size: 0.7rem;
             color: #9ca3af;
             margin-top: 4px;
-            text-align: right;
+            text-align: left;
+            padding-left: 4px;
+        }
+
+        .feedback-row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-top: 6px;
+            padding-left: 4px;
+        }
+        .feedback-btn {
+            background: none;
+            border: 1px solid #e5e7eb;
+            border-radius: 99px;
+            padding: 3px 10px;
+            font-size: 0.75rem;
+            cursor: pointer;
+            color: #9ca3af;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            font-family: inherit;
+        }
+        .feedback-btn:hover { border-color: #1a5f3f; color: #1a5f3f; }
+        .feedback-btn.active-up   { background:#dcfce7; border-color:#16a34a; color:#16a34a; }
+        .feedback-btn.active-down { background:#fee2e2; border-color:#dc2626; color:#dc2626; }
+        .feedback-thanks {
+            font-size: 0.72rem;
+            color: #9ca3af;
+            margin-left: 4px;
+            display: none;
         }
 
         .user .message-time {
-            color: rgba(255, 255, 255, 0.6);
+            color: #9ca3af;
             text-align: right;
-            margin-right: 12px;
+            padding-right: 4px;
+            padding-left: 0;
+            margin-right: 0;
+        }
+
+        /* ── Quick Suggest Chips ── */
+        .suggest-bar {
+            padding: 10px 16px 8px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+            border-bottom: 1px solid #f0f0f0;
+        }
+        .suggest-label {
+            font-size: 0.72rem;
+            color: #9ca3af;
+            white-space: nowrap;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .suggest-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            padding: 4px 11px;
+            background: #f0fdf4;
+            border: 1px solid #bbf7d0;
+            border-radius: 99px;
+            font-size: 0.78rem;
+            color: #1a5f3f;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-family: inherit;
+            white-space: nowrap;
+        }
+        .suggest-chip:hover {
+            background: #1a5f3f;
+            color: white;
+            border-color: #1a5f3f;
+        }
+        .suggest-chip i {
+            font-size: 0.65rem;
+            opacity: 0.6;
         }
 
         .typing-indicator {
             display: none;
-            align-items: center;
+            align-items: flex-end;
             gap: 12px;
+            margin-bottom: 16px;
         }
 
-        .typing-indicator.active {
-            display: flex;
-        }
-
-        .typing-dots {
+        .typing-bubble {
             background: white;
-            padding: 12px 18px;
-            border-radius: 12px;
+            padding: 14px 18px;
+            border-radius: 18px;
+            border-bottom-left-radius: 4px;
             display: flex;
+            align-items: center;
             gap: 5px;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            box-shadow: 0 2px 4px rgba(0,0,0,0.08);
+            border: 1px solid #f0f0f0;
         }
 
         .dot {
             width: 8px;
             height: 8px;
-            background: #9ca3af;
+            background: #a0aec0;
             border-radius: 50%;
-            animation: bounce 1.4s infinite ease-in-out;
+            animation: typingWave 1.3s ease-in-out infinite;
         }
 
-        .dot:nth-child(1) { animation-delay: -0.32s; }
-        .dot:nth-child(2) { animation-delay: -0.16s; }
+        .dot:nth-child(1) { animation-delay: 0s; }
+        .dot:nth-child(2) { animation-delay: 0.2s; }
+        .dot:nth-child(3) { animation-delay: 0.4s; }
 
-        @keyframes bounce {
-            0%, 80%, 100% { transform: scale(0); }
-            40% { transform: scale(1); }
+        @keyframes typingWave {
+            0%, 60%, 100% {
+                transform: translateY(0);
+                background: #a0aec0;
+            }
+            30% {
+                transform: translateY(-6px);
+                background: #1a5f3f;
+            }
         }
 
         .chat-input {
-            padding: 16px 20px;
+            padding: 0;
             border-top: 1px solid #e5e7eb;
             background: white;
+            border-radius: 0 0 8px 8px;
+            overflow: hidden;
+        }
+        .chat-input .input-wrapper {
+            margin: 12px 16px 14px;
         }
 
         .input-wrapper {
@@ -645,13 +741,7 @@
     <header class="header">
         <div class="top-bar">
             <div class="top-bar-content">
-                <div class="user-info">
-                    <div class="user-avatar">N</div>
-                    <span>นิสิต: สมชาย ใจดี | รหัส: 66xxxxxxxx</span>
-                </div>
                 <div>
-                    <i class="far fa-clock"></i>
-                    <span id="current-time"></span>
                 </div>
             </div>
         </div>
@@ -662,19 +752,8 @@
                 </div>
                 <div class="header-text">
                     <h1>ระบบสารสนเทศนิสิต</h1>
-                    <p>คณะวิทยาศาสตร์ มหาวิทยาลัยเกษตรศาสตร์</p>
+                    <p>คณะวิทยาศาสตร์ มหาวิทยาลัยเกษตรศาสตร์ ศรีราชา  </p>
                 </div>
-            </div>
-            <div class="header-actions">
-                <button class="header-btn">
-                    <i class="fas fa-bell"></i>
-                </button>
-                <button class="header-btn">
-                    <i class="fas fa-cog"></i>
-                </button>
-                <button class="header-btn" onclick="window.location.href='/'">
-                    <i class="fas fa-sign-out-alt"></i> ออกจากระบบ
-                </button>
             </div>
         </div>
     </header>
@@ -688,10 +767,6 @@
                     <i class="fas fa-comments"></i>
                     ผู้ช่วยอัจฉริยะ Science Assistant
                 </div>
-                <div style="font-size: 0.85rem; color: #6b7280;">
-                    <i class="fas fa-circle" style="color: #22c55e; font-size: 0.6rem;"></i>
-                    พร้อมให้บริการ
-                </div>
             </div>
 
             <div class="chat-messages" id="chat-messages">
@@ -703,11 +778,11 @@
                     <p>ผมพร้อมช่วยเหลือคุณเกี่ยวกับเอกสาร การลงทะเบียน<br>และข้อมูลต่างๆ ของคณะวิทยาศาสตร์ครับ</p>
                 </div>
 
-                <div class="typing-indicator" id="typing-indicator">
-                    <div class="message-avatar" style="background: #1a5f3f; color: white;">
+                <div class="typing-indicator" id="typing-indicator" style="display:none;">
+                    <div class="message-avatar" style="background: #1a5f3f; color: white; width:40px; height:40px; border-radius:50%; display:flex; align-items:center; justify-content:center; flex-shrink:0;">
                         <i class="fas fa-robot"></i>
                     </div>
-                    <div class="typing-dots">
+                    <div class="typing-bubble">
                         <div class="dot"></div>
                         <div class="dot"></div>
                         <div class="dot"></div>
@@ -716,6 +791,11 @@
             </div>
 
             <div class="chat-input">
+                <!-- Suggest Bar อยู่ในกล่องเดียวกับ input -->
+                <div class="suggest-bar" id="suggest-bar" style="display:none;">
+                    <span class="suggest-label"><i class="fas fa-fire"></i> ถามบ่อย:</span>
+                    <div id="suggest-chips" style="display:flex;gap:6px;flex-wrap:wrap;"></div>
+                </div>
                 <form class="input-wrapper" id="chat-form">
                     <input 
                         type="text" 
@@ -740,7 +820,15 @@
                         ทางลัด
                     </div>
                 </div>
-                <div class="card-content quick-links">
+                <div class="card-content quick-links" id="quick-links-container">
+                    <!-- Bot suggested links will appear here -->
+                    <div id="suggested-links-section" style="display:none; margin-bottom: 8px;">
+                        <div style="font-size:0.8rem;color:#6b7280;padding:6px 10px;background:#f0fdf4;border-radius:4px;border-left:3px solid #1a5f3f;margin-bottom:8px;">
+                            <i class="fas fa-link" style="color:#1a5f3f;"></i> ลิงค์ที่เกี่ยวข้อง
+                        </div>
+                        <div id="suggested-links-list"></div>
+                        <hr style="margin: 10px 0; border-color: #e5e7eb;">
+                    </div>
                     <a href="https://my.ku.th/myku/myku?intent=/" target="_blank" style="text-decoration: none;">
                         <div class="quick-link">
                             <div class="quick-link-icon">
@@ -777,18 +865,12 @@
                     </div>
                 </div>
                 <div class="card-content">
-                    <div class="search-box" style="margin: 0 0 15px 0; padding: 10px 15px; background: #f9fafb; border-radius: 6px; border: 1px solid #e5e7eb;">
-                        <i class="fas fa-search" style="color: #6b7280;"></i>
-                        <input 
-                            type="text" 
-                            id="search-pdf" 
-                            placeholder="ค้นหาเอกสาร..."
-                            onkeyup="searchPDF()"
-                            style="flex: 1; border: none; background: transparent; outline: none; color: #1f2937;"
-                        >
+                    <div id="downloads-placeholder" style="text-align: center; padding: 30px 15px; color: #9ca3af;">
+                        <i class="fas fa-comments" style="font-size: 2rem; margin-bottom: 12px; display: block; color: #d1d5db;"></i>
+                        <p style="font-size: 0.875rem; line-height: 1.6;">เมื่อแชทบอทแนะนำเอกสาร<br>ไฟล์จะปรากฏที่นี่</p>
                     </div>
-                    <div id="downloads-content">
-                        <!-- PDFs will be loaded here -->
+                    <div id="downloads-content" style="display: none;">
+                        <!-- PDFs suggested by bot will appear here -->
                     </div>
                 </div>
             </div>
@@ -796,85 +878,114 @@
     </div>
 
     <script>
-        // PDF Data - from backend
-        let pdfData = [];
+        // PDF Data cache - loaded once from backend
+        let allPdfData = [];
 
-        // Group PDFs
-        function groupByCategory(pdfs) {
-            const grouped = {};
-            pdfs.forEach(pdf => {
-                if (!grouped[pdf.category]) {
-                    grouped[pdf.category] = [];
-                }
-                grouped[pdf.category].push(pdf);
-            });
-            return grouped;
+        // Load all PDF metadata silently on startup
+        function loadDocuments() {
+            fetch('/api/documents')
+                .then(response => response.json())
+                .then(data => { allPdfData = data; })
+                .catch(error => console.error('Error loading documents:', error));
         }
 
-        // Display PDFs
-        function displayPDFs(pdfs = pdfData) {
+        // Display only bot-suggested PDFs in the sidebar
+        let shownFileIds = new Set(); // track ไฟล์ที่แสดงแล้ว
+
+        function showSuggestedFiles(filenames) {
+            const placeholder = document.getElementById('downloads-placeholder');
             const content = document.getElementById('downloads-content');
-            const grouped = groupByCategory(pdfs);
-            
-            let html = '';
-            for (const [category, files] of Object.entries(grouped)) {
-                html += `
-                    <div class="category-section">
-                        <div class="category-title">${category}</div>
-                        ${files.map(pdf => `
-                            <div class="pdf-item" onclick="downloadPDF('${pdf.name}', ${pdf.id})">
-                                <div class="pdf-icon">
-                                    <i class="fas fa-file-pdf"></i>
-                                </div>
-                                <div class="pdf-info">
-                                    <div class="pdf-name">${pdf.name}</div>
-                                    <div class="pdf-category">${category}</div>
-                                </div>
-                                <div class="download-icon">
-                                    <i class="fas fa-download"></i>
-                                </div>
-                            </div>
-                        `).join('')}
+
+            // Match suggested filenames against loaded PDF data
+            const matched = filenames.map(name => {
+                return allPdfData.find(p => p.name === name) 
+                    || allPdfData.find(p => p.name.toLowerCase().includes(name.toLowerCase()))
+                    || { name: name, id: null, category: 'เอกสาร' };
+            }).filter(f => f && !shownFileIds.has(f.name)); // กรองเฉพาะที่ยังไม่แสดง
+
+            if (matched.length === 0) return;
+
+            // ซ่อน placeholder, แสดง content
+            placeholder.style.display = 'none';
+            content.style.display = 'block';
+
+            // เพิ่มไฟล์ใหม่เข้า content
+            matched.forEach(pdf => {
+                shownFileIds.add(pdf.name);
+                const clickAction = pdf.id 
+                    ? `window.location.href='/download/${pdf.id}'`
+                    : `alert('ไม่พบไฟล์ในระบบ')`;
+                const item = document.createElement('div');
+                item.className = 'pdf-item';
+                item.style.borderLeft = '3px solid #1a5f3f';
+                item.setAttribute('onclick', clickAction);
+                item.innerHTML = `
+                    <div class="pdf-icon"><i class="fas fa-file-pdf"></i></div>
+                    <div class="pdf-info">
+                        <div class="pdf-name">${pdf.name}</div>
+                        <div class="pdf-category">${pdf.category}</div>
+                    </div>
+                    <div class="download-icon"><i class="fas fa-download"></i></div>
+                `;
+                content.appendChild(item);
+            });
+
+            // เพิ่ม label "เอกสารที่แนะนำ" ถ้ายังไม่มี
+            if (!content.querySelector('.suggested-label')) {
+                const label = document.createElement('div');
+                label.className = 'suggested-label';
+                label.style.cssText = 'font-size:0.8rem;color:#6b7280;margin-bottom:10px;padding:6px 10px;background:#f0fdf4;border-radius:4px;border-left:3px solid #1a5f3f;';
+                label.innerHTML = '<i class="fas fa-lightbulb" style="color:#1a5f3f;"></i> เอกสารที่แนะนำ';
+                content.insertBefore(label, content.firstChild);
+            }
+        }
+
+        // Show bot-suggested links in quick-links sidebar
+        let shownLinkUrls = new Set();
+
+        function showSuggestedLinks(links) {
+            if (!links || links.length === 0) return;
+
+            const section = document.getElementById('suggested-links-section');
+            const list    = document.getElementById('suggested-links-list');
+
+            const newLinks = links.filter(l => !shownLinkUrls.has(l.url));
+            if (newLinks.length === 0) return;
+
+            newLinks.forEach(link => {
+                shownLinkUrls.add(link.url);
+
+                // icon mapping ตาม domain
+                let icon = 'fa-external-link-alt';
+                if (link.url.includes('mytcas'))     icon = 'fa-graduation-cap';
+                else if (link.url.includes('ku.ac')) icon = 'fa-university';
+                else if (link.url.includes('regis')) icon = 'fa-clipboard-list';
+
+                const el = document.createElement('a');
+                el.href   = link.url;
+                el.target = '_blank';
+                el.style.textDecoration = 'none';
+                el.innerHTML = `
+                    <div class="quick-link" style="margin-bottom:6px;">
+                        <div class="quick-link-icon">
+                            <i class="fas ${icon}"></i>
+                        </div>
+                        <div class="quick-link-text">
+                            <div class="quick-link-title">${link.title}</div>
+                            ${link.desc ? `<div class="quick-link-desc">${link.desc}</div>` : ''}
+                        </div>
+                        <i class="fas fa-chevron-right" style="color:#9ca3af;"></i>
                     </div>
                 `;
-            }
-            
-            content.innerHTML = html || '<p style="text-align: center; color: #6b7280; padding: 20px;">ไม่พบเอกสาร</p>';
-        }
+                list.appendChild(el);
+            });
 
-        // Search PDFs
-        function searchPDF() {
-            const keyword = document.getElementById('search-pdf').value.toLowerCase();
-            if (keyword.length < 2) {
-                displayPDFs();
-                return;
-            }
-            
-            const filtered = pdfData.filter(pdf => 
-                pdf.name.toLowerCase().includes(keyword) || 
-                pdf.category.toLowerCase().includes(keyword)
-            );
-            displayPDFs(filtered);
+            section.style.display = 'block';
         }
 
         // Download PDF
         function downloadPDF(filename, id) {
             window.location.href = `/download/${id}`;
-            addMessage(`กำลังดาวน์โหลดไฟล์: ${filename}`, false);
-        }
-
-        // Load documents from backend
-        function loadDocuments() {
-            fetch('/api/documents')
-                .then(response => response.json())
-                .then(data => {
-                    pdfData = data;
-                    displayPDFs();
-                })
-                .catch(error => {
-                    console.error('Error loading documents:', error);
-                    addMessage('ไม่สามารถโหลดเอกสาร กรุณาลองใหม่', false);
-                });
         }
 
         // Chat functionality
@@ -918,18 +1029,44 @@
             const messageDiv = document.createElement('div');
             messageDiv.className = `message ${isUser ? 'user' : 'bot'}`;
             
-            messageDiv.innerHTML = `
-                <div class="message-avatar">
-                    <i class="fas fa-${isUser ? 'user' : 'robot'}"></i>
-                </div>
-                <div>
-                    <div class="message-content">${formatMessage(message)}</div>
-                    <div class="message-time">${getCurrentTime()}</div> 
-                </div>
-            `; 
+            if (isUser) {
+                messageDiv.innerHTML = `
+                    <div class="message-wrapper">
+                        <div class="message-content">${formatMessage(message)}</div>
+                        <div class="message-time">${getCurrentTime()}</div>
+                    </div>
+                    <div class="message-avatar">
+                        <i class="fas fa-user"></i>
+                    </div>
+                `;
+            } else {
+                const msgId = 'msg_' + Date.now();
+                messageDiv.innerHTML = `
+                    <div class="message-avatar">
+                        <i class="fas fa-robot"></i>
+                    </div>
+                    <div class="message-wrapper">
+                        <div class="message-content">${formatMessage(message)}</div>
+                        <div class="message-time">${getCurrentTime()}</div>
+                        <div class="feedback-row" id="fb_${msgId}">
+                            <button class="feedback-btn" onclick="sendFeedback('${msgId}', 1, this)">
+                                <i class="fas fa-thumbs-up"></i> ถูกต้อง
+                            </button>
+                            <button class="feedback-btn" onclick="sendFeedback('${msgId}', -1, this)">
+                                <i class="fas fa-thumbs-down"></i> ไม่ถูกต้อง
+                            </button>
+                            <span class="feedback-thanks" id="thanks_${msgId}">ขอบคุณครับ</span>
+                        </div>
+                    </div>
+                `;
+                messageDiv.dataset.msgId = msgId;
+            }
             chatMessages.appendChild(messageDiv);
             scrollToBottom();
         }
+
+        // map msgId → chat_log id จาก server
+        const msgLogMap = {};
 
         // Handle chat form submission
         chatForm.addEventListener('submit', async (e) => {
@@ -942,8 +1079,10 @@
             addMessage(message, true);
             userInput.value = '';
             
-            // Show typing indicator
+            // Show typing indicator - always move to bottom of chat
+            chatMessages.appendChild(typingIndicator);
             typingIndicator.style.display = 'flex';
+            scrollToBottom();
             
             try {
                 const response = await fetch('/chat', {
@@ -951,7 +1090,7 @@
                     headers: {
                         'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify({ message: message })
+                    body: JSON.stringify({ message: message, session_id: SESSION_ID, history: conversationHistory })
                 });
                 
                 const data = await response.json();
@@ -959,6 +1098,22 @@
                 
                 if (response.ok) {
                     addMessage(data.response, false);
+                    // เก็บ log_id สำหรับ feedback
+                    const lastBot = chatMessages.querySelector('.message.bot:last-of-type');
+                    if (lastBot && data.log_id) {
+                        msgLogMap[lastBot.dataset.msgId] = data.log_id;
+                    }
+                    // บันทึก history (user + model)
+                    addToHistory("user",  message);
+                    addToHistory("model", data.response);
+                    // If bot suggested files, show them in sidebar
+                    if (data.suggested_files && data.suggested_files.length > 0) {
+                        showSuggestedFiles(data.suggested_files);
+                    }
+                    // If bot suggested links, show in quick-links
+                    if (data.suggested_links && data.suggested_links.length > 0) {
+                        showSuggestedLinks(data.suggested_links);
+                    }
                 } else {
                     addMessage('ขออภัยครับ เกิดข้อผิดพลาด', false);
                 }
@@ -969,9 +1124,91 @@
             }
         });
 
+        // ── Session ID (ใช้ per-browser-tab, เก็บใน sessionStorage) ──
+        const SESSION_ID = (() => {
+            let sid = sessionStorage.getItem('chat_session_id');
+            if (!sid) {
+                sid = 'sess_' + Math.random().toString(36).slice(2) + '_' + Date.now();
+                sessionStorage.setItem('chat_session_id', sid);
+            }
+            return sid;
+        })();
+
+        // ── Conversation History (จำบริบทการสนทนา) ──
+        // เก็บสูงสุด 20 ข้อความ (10 คู่ user+model) กัน token เกิน
+        const MAX_HISTORY = 20;
+        let conversationHistory = [];
+
+        function addToHistory(role, text) {
+            conversationHistory.push({ role, parts: text });
+            if (conversationHistory.length > MAX_HISTORY) {
+                conversationHistory.splice(0, 2); // ตัดคู่เก่าที่สุดออก
+            }
+        }
+
+        // ── Load Top 3 Popular Questions ──────────────
+        async function loadSuggestChips() {
+            try {
+                const r = await fetch('/api/admin/stats');
+                if (!r.ok) return;
+                const d = await r.json();
+                const top3 = (d.top_questions || []).slice(0, 3);
+                if (!top3.length) return;
+
+                const bar   = document.getElementById('suggest-bar');
+                const chips = document.getElementById('suggest-chips');
+
+                chips.innerHTML = top3.map(q => `
+                    <button class="suggest-chip" onclick="sendSuggestion(this, '${q.question.replace(/'/g, "\'")}')">
+                        <i class="fas fa-search"></i>${q.question}
+                    </button>
+                `).join('');
+
+                bar.style.display = 'flex';
+            } catch(e) {
+                // ถ้าโหลดไม่ได้ (ยังไม่มีข้อมูล) ก็ไม่แสดง
+            }
+        }
+
+        function sendSuggestion(btn, text) {
+            // ใส่ข้อความในช่อง input แล้ว submit ทันที
+            const input = document.getElementById('user-input');
+            input.value = text;
+            // highlight chip ชั่วคราว
+            btn.style.background = '#1a5f3f';
+            btn.style.color = 'white';
+            setTimeout(() => {
+                document.getElementById('chat-form').dispatchEvent(new Event('submit'));
+            }, 150);
+        }
+
+        // ── Feedback ────────────────────────────────
+        async function sendFeedback(msgId, score, btn) {
+            const logId = msgLogMap[msgId];
+            if (!logId) return;
+
+            // UI update
+            const row = document.getElementById('fb_' + msgId);
+            row.querySelectorAll('.feedback-btn').forEach(b => {
+                b.classList.remove('active-up', 'active-down');
+                b.disabled = true;
+            });
+            btn.classList.add(score === 1 ? 'active-up' : 'active-down');
+            document.getElementById('thanks_' + msgId).style.display = 'inline';
+
+            try {
+                await fetch('/api/feedback', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ log_id: logId, score: score })
+                });
+            } catch(e) { console.error('Feedback error:', e); }
+        }
+
         // Initialize on page load
         window.addEventListener('DOMContentLoaded', function() {
             loadDocuments();
+            loadSuggestChips();
         });
     </script>
 </body>

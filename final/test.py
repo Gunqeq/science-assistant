@@ -1,281 +1,494 @@
-from flask import Flask, render_template, request, jsonify, send_from_directory
-import google.generativeai as genai
+from flask import Flask, render_template, request, jsonify, send_from_directory, redirect, url_for
+from flask_sqlalchemy import SQLAlchemy
+from datetime import datetime
+from PyPDF2 import PdfReader
+import threading
+import time
 import os
 import re
+import json
+
+import google.generativeai as genai
 from dotenv import load_dotenv
 from prompt import prompt
 from scraper import get_kusrc_data
 
-# โหลดค่า environment จากไฟล์ .env (แต่ไม่ expose ออกไป)
 load_dotenv()
 
-def clean_response(text):
-    """Clean markdown and emojis but preserve HTML formatting"""
-    if not text:
-        return text
-    
-    # ถ้ามี HTML tags ให้คืนค่าเหมือนเดิม (ไม่ต้องเอา)
-    if '<' in text and '>' in text:
-        return text.strip()
-    
-    # Remove markdown formatting
-    text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)  # Bold **text**
-    text = re.sub(r'\*(.*?)\*', r'\1', text)      # Italic *text*
-    text = re.sub(r'\*\*\*', '', text)            # Bold italic ***
-    text = re.sub(r'```[\s\S]*?```', '', text)   # Code blocks
-    text = re.sub(r'`(.*?)`', r'\1', text)       # Inline code
-    # Remove emojis
-    emoji_pattern = re.compile(
-        "[" 
-        u"\U0001F600-\U0001F64F"  # emoticons
-        u"\U0001F300-\U0001F5FF"  # symbols & pictographs
-        u"\U0001F680-\U0001F6FF"  # transport & map symbols
-        u"\U0001F1E0-\U0001F1FF"  # flags (iOS)
-        u"\U00002702-\U000027B0"
-        u"\U000024C2-\U0001F251"
-        u"\U0001f926-\U0001f937"
-        u"\U00010000-\U0010ffff"
-        u"\u2640-\u2642"
-        u"\u2600-\u2B55"
-        u"\u200d"
-        u"\u23cf"
-        u"\u23e9"
-        u"\u231a"
-        u"\ufe0f"
-        u"\u3030"
-        "]+", flags=re.UNICODE)
-    text = emoji_pattern.sub(r'', text)
-    # Clean up extra whitespace
-    text = re.sub(r'\n\s*\n\s*\n', '\n\n', text)
-    return text.strip()
-
+# ──────────────────────────────────────────
+# App & DB
+# ──────────────────────────────────────────
 app = Flask(__name__)
+app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///science_assistant.db"
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "sciKU-secret-2024")
+db = SQLAlchemy(app)
 
-# ======================
-# CONFIG (ฝั่ง server เท่านั้น)
-# ======================
+# Admin credentials (เปลี่ยนได้ใน .env)
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "sci1234")
+
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
-# เก็บ prompt และ context อย่างเดียว (ไม่มี api_key)
-CHAT_SETTINGS = {
-    "system_prompt": prompt,
-    "context": []
-}
+# ──────────────────────────────────────────
+# DB Models
+# ──────────────────────────────────────────
+class ScrapedPage(db.Model):
+    __tablename__ = "scraped_pages"
+    id           = db.Column(db.Integer, primary_key=True)
+    url          = db.Column(db.String(500), unique=True, nullable=False)
+    category     = db.Column(db.String(100))
+    content      = db.Column(db.Text, nullable=False)
+    last_scraped = db.Column(db.DateTime, default=datetime.utcnow)
 
-# ======================
-# โหลดข้อมูลตอน start
-# ======================
-try:
-    print("Loading knowledge base from KUSRC...")
-    CHAT_SETTINGS["context"] = get_kusrc_data()
-    print(f"Loaded {len(CHAT_SETTINGS['context'])} documents.")
-except Exception as e:
-    print(f"Failed to load knowledge base: {e}")
+class ScrapeLog(db.Model):
+    __tablename__ = "scrape_logs"
+    id          = db.Column(db.Integer, primary_key=True)
+    started_at  = db.Column(db.DateTime, default=datetime.utcnow)
+    finished_at = db.Column(db.DateTime, nullable=True)
+    pages       = db.Column(db.Integer, default=0)
+    status      = db.Column(db.String(50), default="running")  # running/done/error
+    trigger     = db.Column(db.String(50), default="auto")     # auto/manual/startup
 
-# ======================
-# ROUTES
-# ======================
-@app.route('/')
-def home():
-    return render_template('chat.html')
+class ChatLog(db.Model):
+    """บันทึกประวัติการสนทนาทุกครั้ง"""
+    __tablename__ = "chat_log"
+    id           = db.Column(db.Integer, primary_key=True)
+    user_id      = db.Column(db.Integer, nullable=True)
+    user_message = db.Column(db.Text, nullable=False)
+    bot_answer   = db.Column(db.Text, nullable=False)
+    timestamp    = db.Column(db.DateTime, default=datetime.utcnow)
+    session_id   = db.Column(db.String(100), nullable=True)
+    feedback     = db.Column(db.Integer, nullable=True)  # 1=ถูกต้อง, -1=ไม่ถูกต้อง, None=ยังไม่ให้
 
+# ──────────────────────────────────────────
+# In-memory context
+# ──────────────────────────────────────────
+CHAT_CONTEXT = []
 
-@app.route('/downloads')
-def downloads():
-    """Show downloads page"""
-    pdf_dir = os.path.join(os.path.dirname(__file__), 'static', 'pdfs')
-    documents = []
-    
-    # PDF categorization mapping
-    categories = {
-        'ทั่วไป': ['คำร้องทั่วไป', 'ขอลาพักการศึกษา', 'ขอรักษาสถานภาพ', 'ขอคืนสภาพนิสิต', 'ใบลา', 'คำสั่งแต่งตั้ง'],
-        'ลงทะเบียน': ['ขอลงทะเบียน', 'ขอกลับเข้าศึกษา', 'KU', 'ลงทะเบียน', 'Admission'],
-        'การเงิน': ['ขอผ่อนผัน', 'ขอลาออก', 'ขอคืน', 'Refund', 'Insurance', 'tuition'],
-        'สอบ': ['ขอสอบชดใช้', 'แนวปฏิบัติ', 'make-up', 'exam'],
-        'เอกสาร': ['รับรอง', 'Certificate', 'รายวิชา'],
-        'แบบฟอร์ม': ['format', 'Form'],
+def load_context_from_db():
+    global CHAT_CONTEXT
+    with app.app_context():
+        rows = ScrapedPage.query.all()
+        CHAT_CONTEXT = [{"source": r.url, "category": r.category, "content": r.content} for r in rows]
+        print(f"[Context] Loaded {len(CHAT_CONTEXT)} pages from DB")
+
+# ──────────────────────────────────────────
+# Scraper
+# ──────────────────────────────────────────
+_scrape_lock = threading.Lock()
+
+def run_scrape(trigger="auto"):
+    if not _scrape_lock.acquire(blocking=False):
+        print("[Scraper] Already running, skipping.")
+        return
+    with app.app_context():
+        log = ScrapeLog(trigger=trigger, status="running")
+        db.session.add(log)
+        db.session.commit()
+        log_id = log.id
+    try:
+        print(f"[Scraper] Starting ({trigger})...")
+        data = get_kusrc_data()
+        with app.app_context():
+            for item in data:
+                existing = ScrapedPage.query.filter_by(url=item["source"]).first()
+                if existing:
+                    existing.content = item["content"]
+                    existing.category = item["category"]
+                    existing.last_scraped = datetime.utcnow()
+                else:
+                    db.session.add(ScrapedPage(url=item["source"], category=item["category"], content=item["content"]))
+            db.session.commit()
+            log = ScrapeLog.query.get(log_id)
+            log.pages = len(data)
+            log.finished_at = datetime.utcnow()
+            log.status = "done"
+            db.session.commit()
+        load_context_from_db()
+        print(f"[Scraper] Done — {len(data)} pages saved.")
+    except Exception as e:
+        with app.app_context():
+            log = ScrapeLog.query.get(log_id)
+            log.status = "error"
+            log.finished_at = datetime.utcnow()
+            db.session.commit()
+        print(f"[Scraper] Error: {e}")
+    finally:
+        _scrape_lock.release()
+
+def scrape_in_background(trigger="auto"):
+    threading.Thread(target=run_scrape, args=(trigger,), daemon=True).start()
+
+# ──────────────────────────────────────────
+# Auto-scrape เที่ยงคืนทุกวัน
+# ──────────────────────────────────────────
+def start_scheduler():
+    """รอจนถึงเที่ยงคืน แล้ว scrape ใหม่ วนซ้ำทุกวัน"""
+    def _loop():
+        while True:
+            now = datetime.utcnow()
+            # คำนวณวินาทีที่เหลือจนถึงเที่ยงคืน UTC (00:00)
+            next_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            from datetime import timedelta
+            next_midnight += timedelta(days=1)
+            wait_secs = (next_midnight - datetime.utcnow()).total_seconds()
+            print(f"[Scheduler] Next auto-scrape in {wait_secs/3600:.1f} hours")
+            time.sleep(wait_secs)
+            scrape_in_background("auto")
+    threading.Thread(target=_loop, daemon=True).start()
+    print("[Scheduler] Auto-scrape scheduled at 00:00 UTC every day")
+
+# ──────────────────────────────────────────
+# PDF helpers
+# ──────────────────────────────────────────
+PDF_DIR = os.path.join(os.path.dirname(__file__), "static", "pdfs")
+
+def get_pdf_category(fn):
+    cats = {
+        "ทั่วไป":     ["คำร้องทั่วไป","ขอลาพักการศึกษา","ขอรักษาสถานภาพ","ขอคืนสภาพนิสิต","ใบลา","คำสั่งแต่งตั้ง"],
+        "ลงทะเบียน":  ["ขอลงทะเบียน","ขอกลับเข้าศึกษา","KU","ลงทะเบียน","Admission"],
+        "การเงิน":    ["ขอผ่อนผัน","ขอลาออก","ขอคืน","Refund","Insurance","tuition"],
+        "สอบ":        ["ขอสอบชดใช้","แนวปฏิบัติ","make-up","exam"],
+        "เอกสาร":     ["รับรอง","Certificate","รายวิชา"],
+        "แบบฟอร์ม":   ["format","Form"],
     }
-    
-    def get_category(filename):
-        for category, keywords in categories.items():
-            for keyword in keywords:
-                if keyword.lower() in filename.lower():
-                    return category
-        return 'เอกสารอื่นๆ'
-    
-    # Group documents by category
-    categories_dict = {}
-    if os.path.exists(pdf_dir):
-        for idx, filename in enumerate(sorted(os.listdir(pdf_dir)), 1):
-            if filename.endswith('.pdf'):
-                category = get_category(filename)
-                if category not in categories_dict:
-                    categories_dict[category] = []
-                
-                categories_dict[category].append({
-                    'id': idx,
-                    'filename': filename,
-                    'original_filename': filename,
-                    'upload_date': None,
-                    'download_count': 0
-                })
-    
-    return render_template('downloads.html', categories=categories_dict)
+    for cat, kws in cats.items():
+        for kw in kws:
+            if kw.lower() in fn.lower():
+                return cat
+    return "เอกสารอื่นๆ"
 
+ALL_PDFS     = sorted([f for f in os.listdir(PDF_DIR) if f.endswith(".pdf")]) if os.path.exists(PDF_DIR) else []
+PDF_LIST_STR = "\n".join(f"- {f}" for f in ALL_PDFS)
 
-@app.route('/api/documents')
-def api_documents():
-    """Get documents from static/pdfs folder with category detection"""
-    pdf_dir = os.path.join(os.path.dirname(__file__), 'static', 'pdfs')
-    documents = []
-    
-    # PDF categorization mapping
-    categories = {
-        'ทั่วไป': ['คำร้องทั่วไป', 'ขอลาพักการศึกษา', 'ขอรักษาสถานภาพ', 'ขอคืนสภาพนิสิต', 'ใบลา', 'คำสั่งแต่งตั้ง'],
-        'ลงทะเบียน': ['ขอลงทะเบียน', 'ขอกลับเข้าศึกษา', 'KU', 'ลงทะเบียน', 'Admission'],
-        'การเงิน': ['ขอผ่อนผัน', 'ขอลาออก', 'ขอคืน', 'Refund', 'Insurance', 'tuition'],
-        'สอบ': ['ขอสอบชดใช้', 'แนวปฏิบัติ', 'make-up', 'exam'],
-        'เอกสาร': ['รับรอง', 'Certificate', 'รายวิชา'],
-        'แบบฟอร์ม': ['format', 'Form'],
-    }
-    
-    def get_category(filename):
-        for category, keywords in categories.items():
-            for keyword in keywords:
-                if keyword.lower() in filename.lower():
-                    return category
-        return 'เอกสารอื่นๆ'
-    
-    if os.path.exists(pdf_dir):
-        for filename in sorted(os.listdir(pdf_dir)):
-            if filename.endswith('.pdf'):
-                documents.append({
-                    'id': len(documents) + 1,
-                    'name': filename,
-                    'category': get_category(filename)
-                })
-    
-    return jsonify(documents)
+# ──────────────────────────────────────────
+# Gemini helper
+# ──────────────────────────────────────────
+def clean_response(text):
+    if not text: return text
+    if "<" in text and ">" in text: return text.strip()
+    text = re.sub(r"\*\*(.*?)\*\*", r"\1", text)
+    text = re.sub(r"\*(.*?)\*",     r"\1", text)
+    text = re.sub(r"```[\s\S]*?```", "", text)
+    emoji_re = re.compile("[" + u"\U0001F600-\U0001F64F" + u"\U0001F300-\U0001F5FF"
+        + u"\U0001F680-\U0001F6FF" + u"\U0001F1E0-\U0001F1FF"
+        + u"\u2640-\u2642" + u"\u2600-\u2B55" + u"\u200d\u23cf\ufe0f" + "]+", flags=re.UNICODE)
+    text = emoji_re.sub("", text)
+    return re.sub(r"\n\s*\n\s*\n", "\n\n", text).strip()
 
+def ask_gemini(user_message, history=None):
+    """
+    history: list of {"role": "user"/"model", "parts": "text"}
+    ส่ง conversation history ให้ Gemini จำบริบทการสนทนาได้
+    """
+    context_str = ""
+    if CHAT_CONTEXT:
+        context_str = "\n\nRelevant Information:\n"
+        for doc in CHAT_CONTEXT:
+            context_str += f"Source: {doc['source']} ({doc['category']})\nContent: {doc['content'][:4000]}\n\n"
 
-@app.route('/download/<int:doc_id>')
-def download_file(doc_id):
-    """Download PDF file by ID"""
-    pdf_dir = os.path.join(os.path.dirname(__file__), 'static', 'pdfs')
-    
-    # Get all PDFs with their IDs
-    documents = []
-    if os.path.exists(pdf_dir):
-        for filename in sorted(os.listdir(pdf_dir)):
-            if filename.endswith('.pdf'):
-                documents.append(filename)
-    
-    # Check if doc_id is valid
-    if doc_id < 1 or doc_id > len(documents):
-        return "File not found", 404
-    
-    filename = documents[doc_id - 1]
-    return send_from_directory(pdf_dir, filename, as_attachment=True)
+    system = f"""{prompt}
+{context_str}
+---
+รายชื่อไฟล์ PDF ที่มีในระบบ (ใช้ชื่อเหล่านี้เท่านั้น):
+{PDF_LIST_STR}
 
+ตอบเป็น JSON เท่านั้น:
+{{
+  "response": "ข้อความตอบกลับ (ห้ามใส่ URL/ลิงค์ในนี้)",
+  "files": ["ชื่อไฟล์.pdf"],
+  "links": [
+    {{"title": "ชื่อที่แสดง", "url": "https://...", "desc": "คำอธิบายสั้น"}}
+  ]
+}}
+- files: เลือกจาก PDF ข้างต้นที่เกี่ยวข้อง (ถ้าไม่มีให้ใส่ [])
+- links: ถ้า response มีการอ้างถึง URL ใดๆ ให้แยกมาใส่ใน links แทน ห้ามใส่ URL ใน response
+- links ที่ใส่ได้ เช่น MyTCAS, เว็บคณะ, ระบบลงทะเบียน, admission.ku.ac.th ฯลฯ
+- ถ้าไม่มีลิงค์ที่เกี่ยวข้องให้ใส่ []
+- ห้ามแต่งชื่อไฟล์เอง
+"""
+    model = genai.GenerativeModel(model_name="gemini-flash-latest", system_instruction=system)
 
-@app.route('/api/documents/search', methods=['POST'])
-def search_documents():
-    """Search documents by keyword"""
-    pdf_dir = os.path.join(os.path.dirname(__file__), 'static', 'pdfs')
-    keyword = request.json.get("keyword", "").lower()
-    
-    # Categories for document classification
-    categories = {
-        'ทั่วไป': ['คำร้องทั่วไป', 'ขอลาพักการศึกษา', 'ขอรักษาสถานภาพ', 'ขอคืนสภาพนิสิต', 'ใบลา', 'คำสั่งแต่งตั้ง'],
-        'ลงทะเบียน': ['ขอลงทะเบียน', 'ขอกลับเข้าศึกษา', 'KU', 'ลงทะเบียน', 'Admission'],
-        'การเงิน': ['ขอผ่อนผัน', 'ขอลาออก', 'ขอคืน', 'Refund', 'Insurance', 'tuition'],
-        'สอบ': ['ขอสอบชดใช้', 'แนวปฏิบัติ', 'make-up', 'exam'],
-        'เอกสาร': ['รับรอง', 'Certificate', 'รายวิชา'],
-        'แบบฟอร์ม': ['format', 'Form'],
-    }
-    
-    def get_category(filename):
-        for category, keywords in categories.items():
-            for keyword_item in keywords:
-                if keyword_item.lower() in filename.lower():
-                    return category
-        return 'เอกสารอื่นๆ'
-    
-    results = []
-    if os.path.exists(pdf_dir):
-        for idx, filename in enumerate(sorted(os.listdir(pdf_dir)), 1):
-            if filename.endswith('.pdf'):
-                if keyword in filename.lower() or keyword in get_category(filename).lower():
-                    results.append({
-                        'id': idx,
-                        'filename': filename,
-                        'category': get_category(filename)
-                    })
-    
-    return jsonify(results)
+    # สร้าง messages array รวม history + current message
+    messages = []
+    if history:
+        for h in history[-10:]:  # ส่งแค่ 10 ข้อความล่าสุด กัน token เกิน
+            messages.append({"role": h["role"], "parts": [{"text": h["parts"]}]})
+    messages.append({"role": "user", "parts": [{"text": user_message}]})
 
+    raw = model.generate_content(messages)
+    raw_text = re.sub(r"^```json\s*\n?", "", raw.text.strip(), flags=re.MULTILINE)
+    raw_text = re.sub(r"\n?```\s*$", "", raw_text, flags=re.MULTILINE).strip()
+    parsed = json.loads(raw_text)
+    bot_text  = clean_response(parsed.get("response", ""))
+    good_files = [f for f in parsed.get("files", []) if f in ALL_PDFS]
+    links     = parsed.get("links", [])
+    # validate links — ต้องมี title และ url
+    good_links = [l for l in links if isinstance(l, dict) and l.get("title") and l.get("url")]
+    return bot_text, good_files, good_links
 
-@app.route('/chat', methods=['GET', 'POST'])
+# ──────────────────────────────────────────
+# Routes
+# ──────────────────────────────────────────
+@app.route("/")
+def index():
+    return render_template("chat.html")
+
+@app.route("/chat", methods=["GET", "POST"])
 def chat():
-    if request.method == 'GET':
-        return render_template('chat.html')
-    
+    if request.method == "GET":
+        return render_template("chat.html")
     data = request.get_json(silent=True)
-    if not data or 'message' not in data:
-        return jsonify({'response': 'Invalid request'}), 400
+    if not data or "message" not in data:
+        return jsonify({"response": "Invalid request"}), 400
+    if not GEMINI_API_KEY:
+        return jsonify({"response": "ยังไม่ได้ตั้งค่า API Key", "suggested_files": []})
+    session_id = data.get("session_id") or request.headers.get("X-Session-Id", "anonymous")
+    history    = data.get("history", [])   # รับ history จาก frontend
+    try:
+        bot_text, files, links = ask_gemini(data["message"], history=history)
 
-    user_message = data.get('message', '')
-
-    # ======================
-    # ถ้ามี API KEY → ใช้ Gemini
-    # ======================
-    if GEMINI_API_KEY:
+        # บันทึกลง DB
+        log = None
         try:
-            # รวม context
-            context_str = ""
-            if CHAT_SETTINGS['context']:
-                context_str += "\n\nRelevant Information:\n"
-                for doc in CHAT_SETTINGS['context']:
-                    context_str += (
-                        f"Source: {doc['source']} ({doc['category']})\n"
-                        f"Content: {doc['content'][:4000]}...\n\n"
-                    )
-
-            full_prompt = CHAT_SETTINGS['system_prompt'] + context_str
-
-            model = genai.GenerativeModel(
-                model_name='gemini-flash-latest',
-                system_instruction=full_prompt
+            log = ChatLog(
+                user_message = data["message"],
+                bot_answer   = bot_text,
+                session_id   = session_id,
+                user_id      = None
             )
+            db.session.add(log)
+            db.session.commit()
+        except Exception as db_err:
+            print(f"[ChatLog] Save error: {db_err}")
+            db.session.rollback()
 
-            response = model.generate_content(user_message)
-            bot_response = clean_response(response.text)
+        return jsonify({"response": bot_text, "suggested_files": files, "suggested_links": links, "log_id": log.id if log else None})
+    except Exception as e:
+        print(f"[Chat Error] {e}")
+        return jsonify({"response": "ขออภัยครับ เกิดข้อผิดพลาด", "suggested_files": []})
 
-        except Exception as e:
-            bot_response = f"AI Error: {str(e)}"
+@app.route("/downloads")
+def downloads():
+    docs = []
+    if os.path.exists(PDF_DIR):
+        for i, fn in enumerate(sorted(os.listdir(PDF_DIR)), 1):
+            if fn.endswith(".pdf"):
+                docs.append({"id": i, "filename": fn, "category": get_pdf_category(fn)})
+    cats = {}
+    for d in docs:
+        cats.setdefault(d["category"], []).append(d)
+    return render_template("downloads.html", categories=cats)
 
-    # ======================
-    # ไม่มี API KEY → ตอบแบบ fallback
-    # ======================
-    else:
-        msg = user_message.lower()
-        if 'hello' in msg or 'hi' in msg or 'สวัสดี' in msg:
-            bot_response = "สวัสดีครับ มีอะไรให้ช่วยไหมครับ"
-        elif 'คุณคือใคร' in msg or 'who are you' in msg:
-            bot_response = "ผมคือ AI Chatbot สำหรับตอบคำถามข้อมูลคณะวิทยาศาสตร์"
-        elif 'bye' in msg or 'ลาก่อน' in msg:
-            bot_response = "ลาก่อนครับ ขอให้เป็นวันที่ดี"
-        else:
-            bot_response = "ขออภัยครับ ระบบไม่สามารถตอบคำถามนี้ได้ โปรดลองใหม่หรือติดต่อเจ้าหน้าที่"
+@app.route("/download/<int:doc_id>")
+def download_file(doc_id):
+    pdfs = sorted([f for f in os.listdir(PDF_DIR) if f.endswith(".pdf")]) if os.path.exists(PDF_DIR) else []
+    if doc_id < 1 or doc_id > len(pdfs):
+        return "File not found", 404
+    return send_from_directory(PDF_DIR, pdfs[doc_id - 1], as_attachment=True)
 
-    return jsonify({'response': bot_response})
+@app.route("/api/documents")
+def api_documents():
+    docs = []
+    if os.path.exists(PDF_DIR):
+        for fn in sorted(os.listdir(PDF_DIR)):
+            if fn.endswith(".pdf"):
+                docs.append({"id": len(docs)+1, "name": fn, "category": get_pdf_category(fn)})
+    return jsonify(docs)
 
+# ── Admin Login / Session ────────────────
+from flask import session as flask_session
+from functools import wraps
 
-# ======================
-# RUN
-# ======================
-if __name__ == '__main__':
-    app.run(debug=True)
+def admin_required(f):
+    """Decorator: ต้อง login ก่อนเข้า admin"""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not flask_session.get("admin_logged_in"):
+            return redirect(url_for("admin_login"))
+        return f(*args, **kwargs)
+    return decorated
+
+@app.route("/admin")
+@app.route("/admin/login", methods=["GET"])
+def admin_login():
+    if flask_session.get("admin_logged_in"):
+        return redirect(url_for("dashboard"))
+    return render_template("admin_login.html")
+
+@app.route("/admin/login", methods=["POST"])
+def admin_auth():
+    username = request.form.get("username", "")
+    password = request.form.get("password", "")
+    if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
+        flask_session["admin_logged_in"] = True
+        flask_session.permanent = False
+        return redirect(url_for("dashboard"))
+    return render_template("admin_login.html", error="ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง")
+
+@app.route("/admin/logout")
+def admin_logout():
+    flask_session.pop("admin_logged_in", None)
+    return redirect(url_for("admin_login"))
+
+# ── Dashboard ────────────────────────────
+@app.route("/dashboard")
+@admin_required
+def dashboard():
+    return render_template("dashboard.html")
+
+@app.route("/api/admin/stats")
+@admin_required
+def api_admin_stats():
+    """สถิติรวมสำหรับ dashboard"""
+    from sqlalchemy import func, cast, Date
+
+    total_chats = ChatLog.query.count()
+    today = datetime.utcnow().date()
+    today_chats = ChatLog.query.filter(
+        func.date(ChatLog.timestamp) == today
+    ).count()
+
+    # Chat 7 วันล่าสุด
+    from datetime import timedelta
+    daily = []
+    for i in range(6, -1, -1):
+        d = today - timedelta(days=i)
+        count = ChatLog.query.filter(func.date(ChatLog.timestamp) == d).count()
+        daily.append({"date": d.strftime("%d/%m"), "count": count})
+
+    # Top 10 คำถามยอดนิยม (ตัด whitespace แล้วนับ)
+    from collections import Counter
+    all_msgs = [r.user_message.strip().lower() for r in ChatLog.query.with_entities(ChatLog.user_message).all()]
+    top_questions = Counter(all_msgs).most_common(10)
+
+    # Scrape status
+    last_scrape = ScrapeLog.query.order_by(ScrapeLog.started_at.desc()).first()
+    scrape_logs = ScrapeLog.query.order_by(ScrapeLog.started_at.desc()).limit(5).all()
+
+    # Feedback stats
+    total_fb   = ChatLog.query.filter(ChatLog.feedback != None).count()
+    positive   = ChatLog.query.filter(ChatLog.feedback == 1).count()
+    satisfaction = round(positive / total_fb * 100, 1) if total_fb > 0 else None
+
+    return jsonify({
+        "total_chats":    total_chats,
+        "today_chats":    today_chats,
+        "scraped_pages":  ScrapedPage.query.count(),
+        "total_sessions": db.session.query(func.count(func.distinct(ChatLog.session_id))).scalar() or 0,
+        "feedback_total": total_fb,
+        "satisfaction":   satisfaction,
+        "daily_chart":    daily,
+        "top_questions":  [{"question": q, "count": c} for q, c in top_questions],
+        "last_scrape": {
+            "status":      last_scrape.status      if last_scrape else "ยังไม่เคย scrape",
+            "finished_at": last_scrape.finished_at.strftime("%d/%m/%Y %H:%M") if last_scrape and last_scrape.finished_at else "-",
+            "pages":       last_scrape.pages       if last_scrape else 0,
+        },
+        "scrape_logs": [{
+            "id": l.id, "trigger": l.trigger, "status": l.status, "pages": l.pages,
+            "started_at":  l.started_at.strftime("%d/%m/%Y %H:%M")  if l.started_at  else "-",
+            "finished_at": l.finished_at.strftime("%d/%m/%Y %H:%M") if l.finished_at else "-",
+        } for l in scrape_logs],
+    })
+
+@app.route("/api/admin/chatlogs")
+@admin_required
+def api_chatlogs():
+    """ดู chat log ย้อนหลัง พร้อม pagination"""
+    page     = request.args.get("page", 1, type=int)
+    per_page = 20
+    logs = ChatLog.query.order_by(ChatLog.timestamp.desc()).paginate(
+        page=page, per_page=per_page, error_out=False
+    )
+    return jsonify({
+        "logs": [{
+            "id":           l.id,
+            "user_message": l.user_message,
+            "bot_answer":   l.bot_answer[:200] + "..." if len(l.bot_answer) > 200 else l.bot_answer,
+            "timestamp":    l.timestamp.strftime("%d/%m/%Y %H:%M:%S"),
+            "session_id":   l.session_id or "-",
+        } for l in logs.items],
+        "total": logs.total,
+        "pages": logs.pages,
+        "current_page": page,
+    })
+
+@app.route("/api/admin/chatlogs/export")
+@admin_required
+def export_chatlogs():
+    """Export chat log เป็น CSV"""
+    import csv, io
+    logs = ChatLog.query.order_by(ChatLog.timestamp.desc()).all()
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["ID", "Timestamp", "Session ID", "User Message", "Bot Answer"])
+    for l in logs:
+        writer.writerow([l.id, l.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+                         l.session_id or "", l.user_message, l.bot_answer])
+    output.seek(0)
+    from flask import Response
+    return Response(
+        "﻿" + output.getvalue(),  # BOM สำหรับ Excel ภาษาไทย
+        mimetype="text/csv",
+        headers={"Content-Disposition": "attachment; filename=chat_logs.csv"}
+    )
+
+@app.route("/api/feedback", methods=["POST"])
+def save_feedback():
+    """รับ feedback 👍👎 จาก user"""
+    data   = request.get_json(silent=True)
+    log_id = data.get("log_id")
+    score  = data.get("score")  # 1 หรือ -1
+    if not log_id or score not in (1, -1):
+        return jsonify({"error": "invalid"}), 400
+    log = ChatLog.query.get(log_id)
+    if not log:
+        return jsonify({"error": "not found"}), 404
+    log.feedback = score
+    db.session.commit()
+    return jsonify({"ok": True})
+
+@app.route("/admin/scrape", methods=["POST"])
+@admin_required
+def admin_scrape():
+    scrape_in_background(trigger="manual")
+    return jsonify({"message": "เริ่ม scrape ในพื้นหลังแล้วครับ"})
+
+@app.route("/admin/scrape/status")
+@admin_required
+def scrape_status():
+    logs = ScrapeLog.query.order_by(ScrapeLog.started_at.desc()).limit(5).all()
+    return jsonify([{
+        "id": l.id, "trigger": l.trigger, "status": l.status, "pages": l.pages,
+        "started_at":  l.started_at.isoformat()  if l.started_at  else None,
+        "finished_at": l.finished_at.isoformat() if l.finished_at else None,
+    } for l in logs])
+
+# ──────────────────────────────────────────
+# Startup
+# ──────────────────────────────────────────
+if __name__ == "__main__":
+    import os as _os
+    # WERKZEUG_RUN_MAIN = "true" เฉพาะใน reloader child process
+    # ถ้า debug=True และไม่ใช้ use_reloader=False มันจะรัน 2 รอบ
+    # guard นี้ทำให้ startup logic รันแค่ครั้งเดียว
+    _is_main_process = _os.environ.get("WERKZEUG_RUN_MAIN") != "true"
+
+    with app.app_context():
+        db.create_all()
+        if _is_main_process:
+            print(f"[PDF] Found {len(ALL_PDFS)} files")
+            count = ScrapedPage.query.count()
+            if count == 0:
+                print("[Startup] DB ว่าง → scrape ทันที")
+                scrape_in_background(trigger="startup")
+            else:
+                print(f"[Startup] DB มี {count} หน้า → โหลดจาก DB ข้าม scrape")
+                load_context_from_db()
+            start_scheduler()
+
+    app.run(debug=True, use_reloader=False)
