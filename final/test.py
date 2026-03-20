@@ -471,24 +471,27 @@ def scrape_status():
 # ──────────────────────────────────────────
 # Startup
 # ──────────────────────────────────────────
-if __name__ == "__main__":
-    import os as _os
-    # WERKZEUG_RUN_MAIN = "true" เฉพาะใน reloader child process
-    # ถ้า debug=True และไม่ใช้ use_reloader=False มันจะรัน 2 รอบ
-    # guard นี้ทำให้ startup logic รันแค่ครั้งเดียว
-    _is_main_process = _os.environ.get("WERKZEUG_RUN_MAIN") != "true"
-
+# ── Startup logic (รันตอน import โดย gunicorn ด้วย) ──────────
+def initialize_app():
+    """เรียกตอน startup ทั้ง local และ Render/gunicorn"""
     with app.app_context():
         db.create_all()
-        if _is_main_process:
-            print(f"[PDF] Found {len(ALL_PDFS)} files")
-            count = ScrapedPage.query.count()
-            if count == 0:
-                print("[Startup] DB ว่าง → scrape ทันที")
-                scrape_in_background(trigger="startup")
-            else:
-                print(f"[Startup] DB มี {count} หน้า → โหลดจาก DB ข้าม scrape")
-                load_context_from_db()
-            start_scheduler()
+        print(f"[PDF] Found {len(ALL_PDFS)} files")
+        count = ScrapedPage.query.count()
+        if count == 0:
+            print("[Startup] DB ว่าง → scrape ทันที")
+            scrape_in_background(trigger="startup")
+        else:
+            print(f"[Startup] DB มี {count} หน้า → โหลดจาก DB ข้าม scrape")
+            load_context_from_db()
+    start_scheduler()
 
-    app.run(debug=True, use_reloader=False)
+# gunicorn import module นี้โดยตรง ต้องเรียก initialize_app() ที่ระดับ module
+import os as _os
+if _os.environ.get("WERKZEUG_RUN_MAIN") != "true":
+    initialize_app()
+
+if __name__ == "__main__":
+    port = int(_os.environ.get("PORT", 5000))
+    debug = _os.environ.get("FLASK_ENV") != "production"
+    app.run(host="0.0.0.0", port=port, debug=debug, use_reloader=False)
