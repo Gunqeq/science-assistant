@@ -476,6 +476,18 @@ def initialize_app():
     """เรียกตอน startup ทั้ง local และ Render/gunicorn"""
     with app.app_context():
         db.create_all()
+        # Auto-migrate: เพิ่ม column ที่อาจขาดใน DB เก่า
+        try:
+            from sqlalchemy import text
+            with db.engine.connect() as conn:
+                # เช็คและเพิ่ม feedback column ถ้ายังไม่มี
+                cols = [r[1] for r in conn.execute(text("PRAGMA table_info(chat_log)")).fetchall()]
+                if "feedback" not in cols:
+                    conn.execute(text("ALTER TABLE chat_log ADD COLUMN feedback INTEGER"))
+                    conn.commit()
+                    print("[Migration] Added column: feedback")
+        except Exception as e:
+            print(f"[Migration] {e}")
         print(f"[PDF] Found {len(ALL_PDFS)} files")
         count = ScrapedPage.query.count()
         if count == 0:
