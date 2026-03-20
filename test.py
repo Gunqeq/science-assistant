@@ -19,8 +19,12 @@ load_dotenv()
 # App & DB
 # ──────────────────────────────────────────
 app = Flask(__name__)
-app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///science_assistant.db"
+app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///science_assistant.db?timeout=30&check_same_thread=False"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
+    "connect_args": {"timeout": 30, "check_same_thread": False},
+    "pool_pre_ping": True,
+}
 app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "sciKU-secret-2024")
 db = SQLAlchemy(app)
 
@@ -343,57 +347,48 @@ def dashboard():
 @app.route("/api/admin/stats")
 @admin_required
 def api_admin_stats():
-    """สถิติรวมสำหรับ dashboard"""
-    from sqlalchemy import func, cast, Date
-
-    total_chats = ChatLog.query.count()
-    today = datetime.utcnow().date()
-    today_chats = ChatLog.query.filter(
-        func.date(ChatLog.timestamp) == today
-    ).count()
-
-    # Chat 7 วันล่าสุด
-    from datetime import timedelta
-    daily = []
-    for i in range(6, -1, -1):
-        d = today - timedelta(days=i)
-        count = ChatLog.query.filter(func.date(ChatLog.timestamp) == d).count()
-        daily.append({"date": d.strftime("%d/%m"), "count": count})
-
-    # Top 10 คำถามยอดนิยม (ตัด whitespace แล้วนับ)
-    from collections import Counter
-    all_msgs = [r.user_message.strip().lower() for r in ChatLog.query.with_entities(ChatLog.user_message).all()]
-    top_questions = Counter(all_msgs).most_common(10)
-
-    # Scrape status
-    last_scrape = ScrapeLog.query.order_by(ScrapeLog.started_at.desc()).first()
-    scrape_logs = ScrapeLog.query.order_by(ScrapeLog.started_at.desc()).limit(5).all()
-
-    # Feedback stats
-    total_fb   = ChatLog.query.filter(ChatLog.feedback != None).count()
-    positive   = ChatLog.query.filter(ChatLog.feedback == 1).count()
-    satisfaction = round(positive / total_fb * 100, 1) if total_fb > 0 else None
-
-    return jsonify({
-        "total_chats":    total_chats,
-        "today_chats":    today_chats,
-        "scraped_pages":  ScrapedPage.query.count(),
-        "total_sessions": db.session.query(func.count(func.distinct(ChatLog.session_id))).scalar() or 0,
-        "feedback_total": total_fb,
-        "satisfaction":   satisfaction,
-        "daily_chart":    daily,
-        "top_questions":  [{"question": q, "count": c} for q, c in top_questions],
-        "last_scrape": {
-            "status":      last_scrape.status      if last_scrape else "ยังไม่เคย scrape",
-            "finished_at": last_scrape.finished_at.strftime("%d/%m/%Y %H:%M") if last_scrape and last_scrape.finished_at else "-",
-            "pages":       last_scrape.pages       if last_scrape else 0,
-        },
-        "scrape_logs": [{
-            "id": l.id, "trigger": l.trigger, "status": l.status, "pages": l.pages,
-            "started_at":  l.started_at.strftime("%d/%m/%Y %H:%M")  if l.started_at  else "-",
-            "finished_at": l.finished_at.strftime("%d/%m/%Y %H:%M") if l.finished_at else "-",
-        } for l in scrape_logs],
-    })
+    try:
+        from sqlalchemy import func
+        from datetime import timedelta
+        from collections import Counter
+        today = datetime.utcnow().date()
+        total_chats  = ChatLog.query.count()
+        today_chats  = ChatLog.query.filter(func.date(ChatLog.timestamp) == today).count()
+        daily = []
+        for i in range(6, -1, -1):
+            d = today - timedelta(days=i)
+            cnt = ChatLog.query.filter(func.date(ChatLog.timestamp) == d).count()
+            daily.append({"date": d.strftime("%d/%m"), "count": cnt})
+        all_msgs = [r.user_message.strip().lower() for r in ChatLog.query.with_entities(ChatLog.user_message).all()]
+        top_questions = Counter(all_msgs).most_common(10)
+        last_scrape = ScrapeLog.query.order_by(ScrapeLog.started_at.desc()).first()
+        scrape_logs = ScrapeLog.query.order_by(ScrapeLog.started_at.desc()).limit(5).all()
+        total_fb     = ChatLog.query.filter(ChatLog.feedback != None).count()
+        positive     = ChatLog.query.filter(ChatLog.feedback == 1).count()
+        satisfaction = round(positive / total_fb * 100, 1) if total_fb > 0 else None
+        return jsonify({
+            "total_chats":    total_chats,
+            "today_chats":    today_chats,
+            "scraped_pages":  ScrapedPage.query.count(),
+            "total_sessions": db.session.query(func.count(func.distinct(ChatLog.session_id))).scalar() or 0,
+            "feedback_total": total_fb,
+            "satisfaction":   satisfaction,
+            "daily_chart":    daily,
+            "top_questions":  [{"question": q, "count": c} for q, c in top_questions],
+            "last_scrape": {
+                "status":      last_scrape.status if last_scrape else "ยังไม่เคย scrape",
+                "finished_at": last_scrape.finished_at.strftime("%d/%m/%Y %H:%M") if last_scrape and last_scrape.finished_at else "-",
+                "pages":       last_scrape.pages if last_scrape else 0,
+            },
+            "scrape_logs": [{
+                "id": l.id, "trigger": l.trigger, "status": l.status, "pages": l.pages,
+                "started_at":  l.started_at.strftime("%d/%m/%Y %H:%M") if l.started_at  else "-",
+                "finished_at": l.finished_at.strftime("%d/%m/%Y %H:%M") if l.finished_at else "-",
+            } for l in scrape_logs],
+        })
+    except Exception as e:
+        print(f"[Stats Error] {e}")
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/api/admin/chatlogs")
 @admin_required
@@ -475,19 +470,22 @@ def scrape_status():
 def initialize_app():
     """เรียกตอน startup ทั้ง local และ Render/gunicorn"""
     with app.app_context():
+        # Step 1: สร้าง table ใหม่ที่ยังไม่มี
         db.create_all()
-        # Auto-migrate: เพิ่ม column ที่อาจขาดใน DB เก่า
+
+        # Step 2: Auto-migrate column ที่อาจขาดใน DB เก่า
         try:
             from sqlalchemy import text
             with db.engine.connect() as conn:
-                # เช็คและเพิ่ม feedback column ถ้ายังไม่มี
                 cols = [r[1] for r in conn.execute(text("PRAGMA table_info(chat_log)")).fetchall()]
                 if "feedback" not in cols:
                     conn.execute(text("ALTER TABLE chat_log ADD COLUMN feedback INTEGER"))
                     conn.commit()
                     print("[Migration] Added column: feedback")
+                else:
+                    print("[Migration] Schema OK")
         except Exception as e:
-            print(f"[Migration] {e}")
+            print(f"[Migration] Error: {e}")
         print(f"[PDF] Found {len(ALL_PDFS)} files")
         count = ScrapedPage.query.count()
         if count == 0:
