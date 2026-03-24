@@ -56,6 +56,11 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
+@app.route("/ping")
+def ping():
+    """Endpoint สำหรับให้ Cron Job เรียกเพื่อปลุกแอป (Keep-alive)"""
+    return "pong", 200
+
 # ──────────────────────────────────────────
 # DB Models
 # ──────────────────────────────────────────
@@ -280,10 +285,6 @@ def ask_gemini(user_message, history=None):
 def index():
     return render_template("chat.html")
 
-@app.route("/ping")
-def ping():
-    """Endpoint สำหรับให้ Cron Job เรียกเพื่อปลุกแอป (Keep-alive)"""
-    return "pong", 200
 
 @app.route("/chat", methods=["GET", "POST"])
 def chat():
