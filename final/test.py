@@ -10,8 +10,8 @@ import json
 
 import google.generativeai as genai
 from dotenv import load_dotenv
-from prompt import prompt
-from scraper import get_kusrc_data
+from final.prompt import prompt
+from final.scraper import get_kusrc_data
 
 
 
