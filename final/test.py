@@ -19,13 +19,16 @@ load_dotenv()
 # App & DB
 # ──────────────────────────────────────────
 app = Flask(__name__)
-app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///science_assistant.db"
+# รองรับทั้ง PostgreSQL (Render) และ SQLite (local)
+_DB_URL = os.getenv("DATABASE_URL", "sqlite:///science_assistant.db")
+if _DB_URL.startswith("postgres://"):
+    _DB_URL = _DB_URL.replace("postgres://", "postgresql://", 1)
+
+app.config["SQLALCHEMY_DATABASE_URI"] = _DB_URL
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
-    "connect_args": {
-        "timeout": 60,
-        "check_same_thread": False,
-    },
+    "pool_pre_ping": True,
+    "pool_recycle": 300,
 }
 app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "sciKU-secret-2024")
 db = SQLAlchemy(app)
@@ -150,6 +153,18 @@ def start_scheduler():
             print(f"[Scheduler] Next auto-scrape at {thai_time_str} Thai time ({wait_secs/3600:.1f} hours from now)")
             time.sleep(wait_secs)
             scrape_in_background("auto")
+
+            # ลบ chat log เก่ากว่า 3 วันอัตโนมัติ
+            try:
+                with app.app_context():
+                    from datetime import timedelta as _td
+                    cutoff = datetime.utcnow() - _td(days=3)
+                    deleted = ChatLog.query.filter(ChatLog.timestamp < cutoff).delete()
+                    db.session.commit()
+                    if deleted:
+                        print(f"[Cleanup] Deleted {deleted} old chat logs")
+            except Exception as ce:
+                print(f"[Cleanup] Error: {ce}")
 
     threading.Thread(target=_loop, daemon=True).start()
     print("[Scheduler] Auto-scrape scheduled at 00:00 Thai time (UTC+7) every day")
@@ -305,13 +320,27 @@ def download_file(doc_id):
 
 @app.route("/api/top_questions")
 def api_top_questions():
-    """Top 3 คำถามยอดนิยม — public endpoint ไม่ต้อง login"""
+    """Top 5 คำถามยอดนิยม — public endpoint ไม่ต้อง login"""
     try:
         from collections import Counter
-        all_msgs = [r.user_message.strip().lower()
-                    for r in ChatLog.query.with_entities(ChatLog.user_message).all()]
-        top3 = [{"question": q, "count": c} for q, c in Counter(all_msgs).most_common(3)]
-        return jsonify({"questions": top3})
+        import re as _re2
+        def normalize_chip(text):
+            text = _re2.sub(r'(ครับ|ค่ะ|คะ|นะ|หน่อย|ได้ไหม|ไหม|บ้าง|เลย|นะครับ|นะคะ)\s*$', '', text.strip().lower()).strip()
+            if _re2.match(r'^(สวัสดี|หวัดดี|ดีครับ|hello|hi|hey)', text): return 'สวัสดี'
+            if _re2.search(r'(สาขา|หลักสูตร|มีสาขา)', text): return 'มีสาขาอะไรบ้าง'
+            if _re2.search(r'(รับสมัคร|สมัครเรียน|tcas)', text): return 'รับสมัครนิสิตใหม่เมื่อไหร่'
+            if _re2.search(r'(ทุน|scholarship)', text): return 'มีทุนการศึกษาไหม'
+            if _re2.search(r'(ค่าเทอม|ค่าเรียน|tuition)', text): return 'ค่าเทอมเท่าไหร่'
+            if _re2.search(r'(ลา|ป่วย|ขาด|leave)', text): return 'ลาป่วยหรือขาดเรียนทำยังไง'
+            if _re2.search(r'(เอกสาร|แบบฟอร์ม|คำร้อง)', text): return 'ขอเอกสารทำยังไง'
+            if _re2.search(r'(อาจารย์|ดร\.|ผศ\.)', text): return 'ข้อมูลอาจารย์'
+            if _re2.search(r'(ลงทะเบียน|เพิ่มวิชา|ถอนวิชา)', text): return 'การลงทะเบียนเรียน'
+            if _re2.search(r'(สอบ|ชดเชย)', text): return 'การสอบและขอสอบชดเชย'
+            return text[:40]
+
+        all_msgs = [r.user_message for r in ChatLog.query.with_entities(ChatLog.user_message).all()]
+        top5 = [{"question": q, "count": c} for q, c in Counter([normalize_chip(m) for m in all_msgs]).most_common(5)]
+        return jsonify({"questions": top5})
     except Exception:
         return jsonify({"questions": []})
 
@@ -380,8 +409,25 @@ def api_admin_stats():
             d = today - timedelta(days=i)
             cnt = ChatLog.query.filter(func.date(ChatLog.timestamp) == d).count()
             daily.append({"date": d.strftime("%d/%m"), "count": cnt})
-        all_msgs = [r.user_message.strip().lower() for r in ChatLog.query.with_entities(ChatLog.user_message).all()]
-        top_questions = Counter(all_msgs).most_common(10)
+        raw_msgs = [r.user_message.strip().lower() for r in ChatLog.query.with_entities(ChatLog.user_message).all()]
+        import re as _re
+        def normalize_q(text):
+            text = text.strip().lower()
+            text = _re.sub(r'(ครับ|ค่ะ|คะ|นะ|หน่อย|ได้ไหม|ไหม|บ้าง|เลย|จ้า|นะครับ|นะคะ)\s*$', '', text).strip()
+            if _re.match(r'^(สวัสดี|หวัดดี|ดีครับ|hello|hi|hey)', text): return 'สวัสดี'
+            if _re.search(r'(สาขา|หลักสูตร|มีสาขา)', text): return 'มีสาขาอะไรบ้าง'
+            if _re.search(r'(รับสมัคร|สมัครเรียน|tcas)', text): return 'รับสมัครนิสิตใหม่เมื่อไหร่'
+            if _re.search(r'(ทุน|scholarship)', text): return 'มีทุนการศึกษาไหม'
+            if _re.search(r'(ค่าเทอม|ค่าเรียน|tuition)', text): return 'ค่าเทอมเท่าไหร่'
+            if _re.search(r'(ลา|ป่วย|ขาด|leave)', text): return 'ลาป่วยหรือขาดเรียนทำยังไง'
+            if _re.search(r'(เอกสาร|แบบฟอร์ม|คำร้อง)', text): return 'ขอเอกสารทำยังไง'
+            if _re.search(r'(อาจารย์|ดร\.|ผศ\.)', text): return 'ข้อมูลอาจารย์'
+            if _re.search(r'(ลงทะเบียน|เพิ่มวิชา|ถอนวิชา)', text): return 'การลงทะเบียนเรียน'
+            if _re.search(r'(สอบ|ชดเชย|make-up)', text): return 'การสอบและขอสอบชดเชย'
+            return text[:40]
+
+        all_msgs = [r.user_message for r in ChatLog.query.with_entities(ChatLog.user_message).all()]
+        top_questions = Counter([normalize_q(m) for m in all_msgs]).most_common(10)
         last_scrape = ScrapeLog.query.order_by(ScrapeLog.started_at.desc()).first()
         scrape_logs = ScrapeLog.query.order_by(ScrapeLog.started_at.desc()).limit(5).all()
         total_fb     = ChatLog.query.filter(ChatLog.feedback != None).count()
