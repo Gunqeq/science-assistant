@@ -409,10 +409,10 @@ def admin_logout():
     return redirect(url_for("admin_login"))
 
 # ── Dashboard ────────────────────────────
-@app.route("/dashboard")
+@app.route("/Dashboard")
 @admin_required
 def dashboard():
-    return render_template("dashboard.html")
+    return render_template("Dashboard.html")
 
 @app.route("/api/admin/stats")
 @admin_required
