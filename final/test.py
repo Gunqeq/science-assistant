@@ -585,8 +585,6 @@ def initialize_app():
 
 # gunicorn import module นี้โดยตรง ต้องเรียก initialize_app() ที่ระดับ module
 import os as _os
-if _os.environ.get("WERKZEUG_RUN_MAIN") != "true":
-    initialize_app()
 
 if __name__ == "__main__":
     port = int(_os.environ.get("PORT", 5000))

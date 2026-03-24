@@ -19,7 +19,7 @@
             min-height: 100vh;
         }
 
-        /* Header */
+        
         .header {
             background: linear-gradient(135deg, #1a5f3f 0%, #2d8659 100%);
             color: white;
@@ -992,6 +992,20 @@
         // Show bot-suggested links in quick-links sidebar
         let shownLinkUrls = new Set();
 
+        const LINK_STYLES = {
+            mytcas:  { bg:'#fce7f3', color:'#db2777', border:'#db2777', icon:'fa-graduation-cap' },
+            regis:   { bg:'#ffedd5', color:'#ea580c', border:'#ea580c', icon:'fa-clipboard-list' },
+            'ku.ac': { bg:'#dcfce7', color:'#16a34a', border:'#16a34a', icon:'fa-flask' },
+            'my.ku': { bg:'#dbeafe', color:'#2563eb', border:'#2563eb', icon:'fa-user-circle' },
+            default: { bg:'#f3e8ff', color:'#7c3aed', border:'#7c3aed', icon:'fa-external-link-alt' },
+        };
+        function getLinkStyle(url) {
+            for (const [key, style] of Object.entries(LINK_STYLES)) {
+                if (url.includes(key)) return style;
+            }
+            return LINK_STYLES.default;
+        }
+
         function showSuggestedLinks(links) {
             if (!links || links.length === 0) return;
 
@@ -1003,21 +1017,16 @@
 
             newLinks.forEach(link => {
                 shownLinkUrls.add(link.url);
-
-                // icon mapping ตาม domain
-                let icon = 'fa-external-link-alt';
-                if (link.url.includes('mytcas'))     icon = 'fa-graduation-cap';
-                else if (link.url.includes('ku.ac')) icon = 'fa-university';
-                else if (link.url.includes('regis')) icon = 'fa-clipboard-list';
+                const s = getLinkStyle(link.url);
 
                 const el = document.createElement('a');
                 el.href   = link.url;
                 el.target = '_blank';
                 el.style.textDecoration = 'none';
                 el.innerHTML = `
-                    <div class="quick-link" style="margin-bottom:6px;">
-                        <div class="quick-link-icon">
-                            <i class="fas ${icon}"></i>
+                    <div class="quick-link" style="margin-bottom:6px;border-left:3px solid ${s.border};">
+                        <div class="quick-link-icon" style="background:${s.bg};color:${s.color};">
+                            <i class="fas ${s.icon}"></i>
                         </div>
                         <div class="quick-link-text">
                             <div class="quick-link-title">${link.title}</div>
@@ -1197,12 +1206,15 @@
 
         // ── Load Top 3 Popular Questions ──────────────
         async function loadSuggestChips(retryCount = 0) {
-            try {
-                const r = await fetch('/api/top_questions');
-                if (!r.ok) return;
-                const d = await r.json();
-                const top3 = (d.questions || []).slice(0, 3);
-
+                try {
+                    const r = await fetch('/api/top_questions');
+                    console.log('status:', r.status);  // เพิ่มบรรทัดนี้
+                    if (!r.ok) return;
+                    const d = await r.json();
+                    console.log('data:', d);  // เพิ่มบรรทัดนี้
+                    const top3 = (d.questions || []).slice(0, 5);
+                    console.log('top3 length:', top3.length, 'items:', JSON.stringify(top3));
+                    console.log('top3:', top3);  // เพิ่มบรรทัดนี้
                 if (!top3.length) {
                     // ถ้ายังไม่มีข้อมูล retry สูงสุด 3 ครั้ง ห่างกัน 3 วินาที
                     if (retryCount < 3) {
@@ -1213,7 +1225,7 @@
 
                 const bar   = document.getElementById('suggest-bar');
                 const chips = document.getElementById('suggest-chips');
-
+                console.log('bar:', bar, 'chips:', chips);  // เพิ่มบรรทัดนี้
                 chips.innerHTML = top3.map(q => `
                     <button class="suggest-chip" onclick="sendSuggestion(this, '${q.question.replace(/'/g, "\'")}')">
                         <i class="fas fa-search"></i>${q.question}
@@ -1221,6 +1233,7 @@
                 `).join('');
 
                 bar.style.display = 'flex';
+                console.log('bar displayed');  // เพิ่มบรรทัดนี้
             } catch(e) {
                 // retry ถ้า error
                 if (retryCount < 3) {
@@ -1267,8 +1280,18 @@
         // Initialize on page load
         window.addEventListener('DOMContentLoaded', function() {
             loadDocuments();
-            loadSuggestChips();
+            loadSuggestChips()
+            setInterval(loadSuggestChips, 5 * 60 * 1000); // reload ทุก 5 นาที
         });
     </script>
+     <div style="text-align:center;padding:10px 16px;font-size:0.72rem;color:#9ca3af;background:#f9fafb;border-top:1px solid #f3f4f6;line-height:1.8;">
+        <div style="margin-bottom:4px;color:#6b7280;font-weight:600;">Science Assistant  &nbsp;|&nbsp; Powered by Gemini AI</div>
+        <div>พัฒนาโดย <strong style="color:#1a5f3f;">นิสิตคณะวิทยาศาสตร์ มหาวิทยาลัยเกษตรศาสตร์ วิทยาเขตศรีราชา</strong></div>
+        <div style="margin-top:4px;display:flex;justify-content:center;gap:24px;flex-wrap:wrap;">
+            <span>นายภัทราวุธ สุขบท <span style="color:#1a5f3f;">6530250182</span></span>
+            <span>นายอุกฤษฎ์ จรเอ้กา <span style="color:#1a5f3f;">6530250298</span></span>
+            <span>นายทรงวุฒิ สุดตาลัย <span style="color:#1a5f3f;">6530250379</span></span>
+        </div>
+    </div>
 </body>
 </html>
