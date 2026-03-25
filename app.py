@@ -510,6 +510,14 @@ def admin_logout():
 def dashboard():
     return render_template("Dashboard.html")
 
+def to_thai_time(dt):
+    """แปลง UTC datetime เป็นเวลาไทย UTC+7"""
+    if dt is None:
+        return "-"
+    from datetime import timedelta
+    thai = dt + timedelta(hours=7)
+    return thai.strftime("%d/%m/%Y %H:%M")
+
 @app.route("/api/admin/stats")
 @admin_required
 def api_admin_stats():
@@ -562,13 +570,13 @@ def api_admin_stats():
             "top_questions":     [{"question": q, "count": c} for q, c in top_questions],
             "last_scrape": {
                 "status":      last_scrape.status if last_scrape else "ยังไม่เคย scrape",
-                "finished_at": last_scrape.finished_at.strftime("%d/%m/%Y %H:%M") if last_scrape and last_scrape.finished_at else "-",
+                "finished_at": to_thai_time(last_scrape.finished_at) if last_scrape else "-",
                 "pages":       last_scrape.pages if last_scrape else 0,
             },
             "scrape_logs": [{
                 "id": l.id, "trigger": l.trigger, "status": l.status, "pages": l.pages,
-                "started_at":  l.started_at.strftime("%d/%m/%Y %H:%M") if l.started_at  else "-",
-                "finished_at": l.finished_at.strftime("%d/%m/%Y %H:%M") if l.finished_at else "-",
+                "started_at":  to_thai_time(l.started_at),
+                "finished_at": to_thai_time(l.finished_at),
             } for l in scrape_logs],
         })
     except Exception as e:
@@ -588,7 +596,7 @@ def api_chatlogs():
             "id":           l.id,
             "user_message": l.user_message,
             "bot_answer":   l.bot_answer[:200] + "..." if len(l.bot_answer) > 200 else l.bot_answer,
-            "timestamp":    l.timestamp.strftime("%d/%m/%Y %H:%M:%S"),
+            "timestamp":    to_thai_time(l.timestamp),
             "session_id":   l.session_id or "-",
         } for l in logs.items],
         "total": logs.total,
@@ -605,7 +613,7 @@ def export_chatlogs():
     writer = csv.writer(output)
     writer.writerow(["ID", "Timestamp", "Session ID", "User Message", "Bot Answer"])
     for l in logs:
-        writer.writerow([l.id, l.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+        writer.writerow([l.id, to_thai_time(l.timestamp),
                          l.session_id or "", l.user_message, l.bot_answer])
     output.seek(0)
     from flask import Response
@@ -631,8 +639,8 @@ def api_admin_users():
             "line_user_id": u.line_user_id,
             "display_name": u.display_name,
             "picture_url":  u.picture_url,
-            "first_login":  u.first_login.strftime("%d/%m/%Y %H:%M"),
-            "last_login":   u.last_login.strftime("%d/%m/%Y %H:%M"),
+            "first_login":  to_thai_time(u.first_login),
+            "last_login":   to_thai_time(u.last_login),
             "login_count":  days_diff,
         })
     return jsonify({
@@ -654,8 +662,8 @@ def scrape_status():
     logs = ScrapeLog.query.order_by(ScrapeLog.started_at.desc()).limit(5).all()
     return jsonify([{
         "id": l.id, "trigger": l.trigger, "status": l.status, "pages": l.pages,
-        "started_at":  l.started_at.isoformat()  if l.started_at  else None,
-        "finished_at": l.finished_at.isoformat() if l.finished_at else None,
+        "started_at":  to_thai_time(l.started_at),
+        "finished_at": to_thai_time(l.finished_at),
     } for l in logs])
 
 # ──────────────────────────────────────────
