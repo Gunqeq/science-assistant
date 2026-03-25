@@ -611,6 +611,33 @@ def export_chatlogs():
         mimetype="text/csv",
         headers={"Content-Disposition": "attachment; filename=chat_logs.csv"}
     )
+@app.route("/api/admin/users")
+@admin_required
+def api_admin_users():
+    """รายชื่อผู้ใช้ที่ login ด้วย LINE"""
+    page     = request.args.get("page", 1, type=int)
+    per_page = 20
+    users = LineUser.query.order_by(LineUser.last_login.desc()).paginate(
+        page=page, per_page=per_page, error_out=False
+    )
+    result = []
+    for u in users.items:
+        days_diff = max(1, (u.last_login - u.first_login).days + 1)
+        result.append({
+            "id":           u.id,
+            "line_user_id": u.line_user_id,
+            "display_name": u.display_name,
+            "picture_url":  u.picture_url,
+            "first_login":  u.first_login.strftime("%d/%m/%Y %H:%M"),
+            "last_login":   u.last_login.strftime("%d/%m/%Y %H:%M"),
+            "login_count":  days_diff,
+        })
+    return jsonify({
+        "users":   result,
+        "total":   users.total,
+        "pages":   users.pages,
+        "current": page,
+    })
 
 @app.route("/admin/scrape", methods=["POST"])
 @admin_required
