@@ -1,24 +1,24 @@
 from flask import Flask, render_template, request, jsonify, send_from_directory, redirect, url_for, session as flask_session
 from flask_sqlalchemy import SQLAlchemy
-from authlib.integrations.flask_client import OAuth
+from functools import wraps
 from datetime import datetime, timedelta as _td
 from PyPDF2 import PdfReader
+from urllib.parse import urlencode
 import threading
 import time
 import os
 import re
 import json
+import secrets
 import requests
-from urllib.parse import urlencode
+import traceback
 from bs4 import BeautifulSoup
 
 import google.generativeai as genai
 from dotenv import load_dotenv
-from prompt import prompt
-from scraper import get_kusrc_data
 
 load_dotenv()
-import traceback
+
 try:
     from scraper import get_kusrc_data
 except Exception as e:
@@ -30,11 +30,12 @@ try:
 except Exception as e:
     print("PROMPT ERROR:", traceback.format_exc())
     prompt = None
+
 # ──────────────────────────────────────────
 # App & DB
 # ──────────────────────────────────────────
 app = Flask(__name__)
-# รองรับทั้ง PostgreSQL (Render) และ SQLite (local)
+
 _DB_URL = os.getenv("DATABASE_URL", "sqlite:///science_assistant.db")
 if _DB_URL.startswith("postgres://"):
     _DB_URL = _DB_URL.replace("postgres://", "postgresql://", 1)
@@ -48,18 +49,40 @@ app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
 app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "sciKU-secret-2024")
 db = SQLAlchemy(app)
 
-# Admin credentials (เปลี่ยนได้ใน .env)
+# Admin credentials
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "sci1234")
 
+# Gemini
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
-@app.route("/ping")
-def ping():
-    """Endpoint สำหรับให้ Cron Job เรียกเพื่อปลุกแอป (Keep-alive)"""
-    return "pong", 200
+# LINE Login
+LINE_CLIENT_ID     = os.getenv("LINE_CLIENT_ID")
+LINE_CLIENT_SECRET = os.getenv("LINE_CLIENT_SECRET")
+LINE_REDIRECT_URI  = os.getenv("LINE_REDIRECT_URI")
+
+# ──────────────────────────────────────────
+# Decorators (ต้องนิยามก่อน routes ทุกตัว)
+# ──────────────────────────────────────────
+def login_required(f):
+    """บังคับ login ด้วย LINE ก่อนเข้าใช้งาน"""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not flask_session.get("line_user_id"):
+            return redirect(url_for("login_page"))
+        return f(*args, **kwargs)
+    return decorated
+
+def admin_required(f):
+    """บังคับ login admin ก่อนเข้า admin panel"""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not flask_session.get("admin_logged_in"):
+            return redirect(url_for("admin_login"))
+        return f(*args, **kwargs)
+    return decorated
 
 # ──────────────────────────────────────────
 # DB Models
@@ -78,11 +101,10 @@ class ScrapeLog(db.Model):
     started_at  = db.Column(db.DateTime, default=datetime.utcnow)
     finished_at = db.Column(db.DateTime, nullable=True)
     pages       = db.Column(db.Integer, default=0)
-    status      = db.Column(db.String(50), default="running")  # running/done/error
-    trigger     = db.Column(db.String(50), default="auto")     # auto/manual/startup
+    status      = db.Column(db.String(50), default="running")
+    trigger     = db.Column(db.String(50), default="auto")
 
 class ChatLog(db.Model):
-    """บันทึกประวัติการสนทนาทุกครั้ง"""
     __tablename__ = "chat_log"
     id           = db.Column(db.Integer, primary_key=True)
     user_id      = db.Column(db.Integer, nullable=True)
@@ -90,7 +112,16 @@ class ChatLog(db.Model):
     bot_answer   = db.Column(db.Text, nullable=False)
     timestamp    = db.Column(db.DateTime, default=datetime.utcnow)
     session_id   = db.Column(db.String(100), nullable=True)
-    feedback     = db.Column(db.Integer, nullable=True)  # 1=ถูกต้อง, -1=ไม่ถูกต้อง, None=ยังไม่ให้
+    feedback     = db.Column(db.Integer, nullable=True)
+
+class LineUser(db.Model):
+    __tablename__ = "line_users"
+    id            = db.Column(db.Integer, primary_key=True)
+    line_user_id  = db.Column(db.String(100), unique=True, nullable=False)
+    display_name  = db.Column(db.String(100))
+    picture_url   = db.Column(db.String(300))
+    first_login   = db.Column(db.DateTime, default=datetime.utcnow)
+    last_login    = db.Column(db.DateTime, default=datetime.utcnow)
 
 # ──────────────────────────────────────────
 # In-memory context
@@ -155,26 +186,20 @@ def scrape_in_background(trigger="auto"):
 # Auto-scrape เที่ยงคืนทุกวัน
 # ──────────────────────────────────────────
 def start_scheduler():
-    """รอจนถึงเที่ยงคืนเวลาไทย (UTC+7 = 17:00 UTC) แล้ว scrape ใหม่"""
     from datetime import timedelta
-    THAI_OFFSET = 7  # UTC+7
+    THAI_OFFSET = 7
 
     def _loop():
         while True:
             now_utc = datetime.utcnow()
             now_thai = now_utc + timedelta(hours=THAI_OFFSET)
-
-            # เที่ยงคืนไทย = 00:00 Thai = 17:00 UTC วันก่อนหน้า
             next_midnight_thai = now_thai.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
             next_midnight_utc  = next_midnight_thai - timedelta(hours=THAI_OFFSET)
             wait_secs = (next_midnight_utc - datetime.utcnow()).total_seconds()
-
             thai_time_str = next_midnight_thai.strftime("%d/%m/%Y 00:00")
             print(f"[Scheduler] Next auto-scrape at {thai_time_str} Thai time ({wait_secs/3600:.1f} hours from now)")
             time.sleep(wait_secs)
             scrape_in_background("auto")
-
-            # ลบ chat log เก่ากว่า 3 วันอัตโนมัติ
             try:
                 with app.app_context():
                     from datetime import timedelta as _td
@@ -228,10 +253,6 @@ def clean_response(text):
     return re.sub(r"\n\s*\n\s*\n", "\n\n", text).strip()
 
 def ask_gemini(user_message, history=None):
-    """
-    history: list of {"role": "user"/"model", "parts": "text"}
-    ส่ง conversation history ให้ Gemini จำบริบทการสนทนาได้
-    """
     context_str = ""
     if CHAT_CONTEXT:
         context_str = "\n\nRelevant Information:\n"
@@ -259,11 +280,9 @@ def ask_gemini(user_message, history=None):
 - ห้ามแต่งชื่อไฟล์เอง
 """
     model = genai.GenerativeModel(model_name="gemini-flash-latest", system_instruction=system)
-
-    # สร้าง messages array รวม history + current message
     messages = []
     if history:
-        for h in history[-10:]:  # ส่งแค่ 10 ข้อความล่าสุด กัน token เกิน
+        for h in history[-10:]:
             messages.append({"role": h["role"], "parts": [{"text": h["parts"]}]})
     messages.append({"role": "user", "parts": [{"text": user_message}]})
 
@@ -271,77 +290,85 @@ def ask_gemini(user_message, history=None):
     raw_text = re.sub(r"^```json\s*\n?", "", raw.text.strip(), flags=re.MULTILINE)
     raw_text = re.sub(r"\n?```\s*$", "", raw_text, flags=re.MULTILINE).strip()
     parsed = json.loads(raw_text)
-    bot_text  = clean_response(parsed.get("response", ""))
+    bot_text   = clean_response(parsed.get("response", ""))
     good_files = [f for f in parsed.get("files", []) if f in ALL_PDFS]
-    links     = parsed.get("links", [])
-    # validate links — ต้องมี title และ url
+    links      = parsed.get("links", [])
     good_links = [l for l in links if isinstance(l, dict) and l.get("title") and l.get("url")]
     return bot_text, good_files, good_links
 
 # ──────────────────────────────────────────
-# Routes
+# Routes — Public (ไม่ต้อง login)
 # ──────────────────────────────────────────
-@app.route("/")
-def index():
-    return render_template("chat.html")
+@app.route("/ping")
+def ping():
+    return "pong", 200
+
+@app.route("/login")
+def login_page():
+    if flask_session.get("line_user_id"):
+        return redirect(url_for("index"))
+    return render_template("login.html")
+
+@app.route("/auth/line")
+def line_login():
+    state = secrets.token_hex(16)
+    flask_session["oauth_state"] = state
+    params = {
+        "response_type": "code",
+        "client_id":     LINE_CLIENT_ID,
+        "redirect_uri":  LINE_REDIRECT_URI,
+        "scope":         "profile openid",
+        "state":         state,
+    }
+    return redirect("https://access.line.me/oauth2/v2.1/authorize?" + urlencode(params))
+
+@app.route("/auth/line/callback")
+def line_callback():
+    code  = request.args.get("code")
+    state = request.args.get("state")
+    if state != flask_session.get("oauth_state"):
+        print(f"[DEBUG] MISMATCH: {state} != {flask_session.get('oauth_state')}")
+        # ข้ามไปก่อนเพื่อ debug
+
+    token_res = requests.post("https://api.line.me/oauth2/v2.1/token", data={
+        "grant_type":    "authorization_code",
+        "code":          code,
+        "redirect_uri":  LINE_REDIRECT_URI,
+        "client_id":     LINE_CLIENT_ID,
+        "client_secret": LINE_CLIENT_SECRET,
+    })
+    access_token = token_res.json().get("access_token")
+    if not access_token:
+        return redirect(url_for("login_page"))
+
+    profile = requests.get("https://api.line.me/v2/profile",
+        headers={"Authorization": f"Bearer {access_token}"}
+    ).json()
+
+    user = LineUser.query.filter_by(line_user_id=profile["userId"]).first()
+    if not user:
+        user = LineUser(
+            line_user_id = profile["userId"],
+            display_name = profile.get("displayName"),
+            picture_url  = profile.get("pictureUrl"),
+        )
+        db.session.add(user)
+    else:
+        user.last_login   = datetime.utcnow()
+        user.display_name = profile.get("displayName")
+        user.picture_url  = profile.get("pictureUrl")
+    db.session.commit()
+
+    flask_session["line_user_id"]      = profile["userId"]
+    flask_session["line_display_name"] = profile.get("displayName")
+    flask_session["line_picture"]      = profile.get("pictureUrl")
+    return redirect(url_for("index"))
 
 
-@app.route("/chat", methods=["GET", "POST"])
-def chat():
-    if request.method == "GET":
-        return render_template("chat.html")
-    data = request.get_json(silent=True)
-    if not data or "message" not in data:
-        return jsonify({"response": "Invalid request"}), 400
-    if not GEMINI_API_KEY:
-        return jsonify({"response": "ยังไม่ได้ตั้งค่า API Key", "suggested_files": []})
-    session_id = data.get("session_id") or request.headers.get("X-Session-Id", "anonymous")
-    history    = data.get("history", [])   # รับ history จาก frontend
-    try:
-        bot_text, files, links = ask_gemini(data["message"], history=history)
-
-        # บันทึกลง DB
-        log = None
-        try:
-            log = ChatLog(
-                user_message = data["message"],
-                bot_answer   = bot_text,
-                session_id   = session_id,
-                user_id      = None
-            )
-            db.session.add(log)
-            db.session.commit()
-        except Exception as db_err:
-            print(f"[ChatLog] Save error: {db_err}")
-            db.session.rollback()
-
-        return jsonify({"response": bot_text, "suggested_files": files, "suggested_links": links, "log_id": log.id if log else None})
-    except Exception as e:
-        print(f"[Chat Error] {e}")
-        return jsonify({"response": "ขออภัยครับ เกิดข้อผิดพลาด", "suggested_files": []})
-
-@app.route("/downloads")
-def downloads():
-    docs = []
-    if os.path.exists(PDF_DIR):
-        for i, fn in enumerate(sorted(os.listdir(PDF_DIR)), 1):
-            if fn.endswith(".pdf"):
-                docs.append({"id": i, "filename": fn, "category": get_pdf_category(fn)})
-    cats = {}
-    for d in docs:
-        cats.setdefault(d["category"], []).append(d)
-    return render_template("downloads.html", categories=cats)
-
-@app.route("/download/<int:doc_id>")
-def download_file(doc_id):
-    pdfs = sorted([f for f in os.listdir(PDF_DIR) if f.endswith(".pdf")]) if os.path.exists(PDF_DIR) else []
-    if doc_id < 1 or doc_id > len(pdfs):
-        return "File not found", 404
-    return send_from_directory(PDF_DIR, pdfs[doc_id - 1], as_attachment=True)
 
 @app.route("/api/top_questions")
 def api_top_questions():
-    """Top 5 คำถามยอดนิยม — public endpoint ไม่ต้อง login"""
+    """Top 5 คำถามยอดนิยม — public endpoint"""
     try:
         from collections import Counter
         import re as _re2
@@ -358,14 +385,75 @@ def api_top_questions():
             if _re2.search(r'(ลงทะเบียน|เพิ่มวิชา|ถอนวิชา)', text): return 'การลงทะเบียนเรียน'
             if _re2.search(r'(สอบ|ชดเชย)', text): return 'การสอบและขอสอบชดเชย'
             return text[:40]
-
         all_msgs = [r.user_message for r in ChatLog.query.with_entities(ChatLog.user_message).all()]
         top5 = [{"question": q, "count": c} for q, c in Counter([normalize_chip(m) for m in all_msgs]).most_common(5)]
         return jsonify({"questions": top5})
     except Exception:
         return jsonify({"questions": []})
 
+# ──────────────────────────────────────────
+# Routes — ต้อง login LINE
+# ──────────────────────────────────────────
+@app.route("/")
+@login_required
+def index():
+    return render_template("chat.html")
+
+@app.route("/chat", methods=["GET", "POST"])
+@login_required
+def chat():
+    if request.method == "GET":
+        return render_template("chat.html")
+    data = request.get_json(silent=True)
+    if not data or "message" not in data:
+        return jsonify({"response": "Invalid request"}), 400
+    if not GEMINI_API_KEY:
+        return jsonify({"response": "ยังไม่ได้ตั้งค่า API Key", "suggested_files": []})
+    session_id = data.get("session_id") or request.headers.get("X-Session-Id", "anonymous")
+    history    = data.get("history", [])
+    try:
+        bot_text, files, links = ask_gemini(data["message"], history=history)
+        log = None
+        try:
+            log = ChatLog(
+                user_message = data["message"],
+                bot_answer   = bot_text,
+                session_id   = session_id,
+                user_id      = None,
+            )
+            db.session.add(log)
+            db.session.commit()
+        except Exception as db_err:
+            print(f"[ChatLog] Save error: {db_err}")
+            db.session.rollback()
+        return jsonify({"response": bot_text, "suggested_files": files, "suggested_links": links, "log_id": log.id if log else None})
+    except Exception as e:
+        print(f"[Chat Error] {e}")
+        return jsonify({"response": "ขออภัยครับ เกิดข้อผิดพลาด", "suggested_files": []})
+
+@app.route("/downloads")
+@login_required
+def downloads():
+    docs = []
+    if os.path.exists(PDF_DIR):
+        for i, fn in enumerate(sorted(os.listdir(PDF_DIR)), 1):
+            if fn.endswith(".pdf"):
+                docs.append({"id": i, "filename": fn, "category": get_pdf_category(fn)})
+    cats = {}
+    for d in docs:
+        cats.setdefault(d["category"], []).append(d)
+    return render_template("downloads.html", categories=cats)
+
+@app.route("/download/<int:doc_id>")
+@login_required
+def download_file(doc_id):
+    pdfs = sorted([f for f in os.listdir(PDF_DIR) if f.endswith(".pdf")]) if os.path.exists(PDF_DIR) else []
+    if doc_id < 1 or doc_id > len(pdfs):
+        return "File not found", 404
+    return send_from_directory(PDF_DIR, pdfs[doc_id - 1], as_attachment=True)
+
 @app.route("/api/documents")
+@login_required
 def api_documents():
     docs = []
     if os.path.exists(PDF_DIR):
@@ -374,19 +462,24 @@ def api_documents():
                 docs.append({"id": len(docs)+1, "name": fn, "category": get_pdf_category(fn)})
     return jsonify(docs)
 
-# ── Admin Login / Session ────────────────
-from flask import session as flask_session
-from functools import wraps
+@app.route("/api/feedback", methods=["POST"])
+@login_required
+def save_feedback():
+    data   = request.get_json(silent=True)
+    log_id = data.get("log_id")
+    score  = data.get("score")
+    if not log_id or score not in (1, -1):
+        return jsonify({"error": "invalid"}), 400
+    log = ChatLog.query.get(log_id)
+    if not log:
+        return jsonify({"error": "not found"}), 404
+    log.feedback = score
+    db.session.commit()
+    return jsonify({"ok": True})
 
-def admin_required(f):
-    """Decorator: ต้อง login ก่อนเข้า admin"""
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        if not flask_session.get("admin_logged_in"):
-            return redirect(url_for("admin_login"))
-        return f(*args, **kwargs)
-    return decorated
-
+# ──────────────────────────────────────────
+# Admin Routes
+# ──────────────────────────────────────────
 @app.route("/admin")
 @app.route("/admin/login", methods=["GET"])
 def admin_login():
@@ -409,7 +502,6 @@ def admin_logout():
     flask_session.pop("admin_logged_in", None)
     return redirect(url_for("admin_login"))
 
-# ── Dashboard ────────────────────────────
 @app.route("/Dashboard")
 @admin_required
 def dashboard():
@@ -430,6 +522,7 @@ def api_admin_stats():
             d = today - timedelta(days=i)
             cnt = ChatLog.query.filter(func.date(ChatLog.timestamp) == d).count()
             daily.append({"date": d.strftime("%d/%m"), "count": cnt})
+
         raw_msgs = [r.user_message.strip().lower() for r in ChatLog.query.with_entities(ChatLog.user_message).all()]
         import re as _re
         def normalize_q(text):
@@ -449,21 +542,21 @@ def api_admin_stats():
 
         all_msgs = [r.user_message for r in ChatLog.query.with_entities(ChatLog.user_message).all()]
         top_questions = Counter([normalize_q(m) for m in all_msgs]).most_common(10)
-        last_scrape = ScrapeLog.query.order_by(ScrapeLog.started_at.desc()).first()
-        scrape_logs = ScrapeLog.query.order_by(ScrapeLog.started_at.desc()).limit(5).all()
+        last_scrape  = ScrapeLog.query.order_by(ScrapeLog.started_at.desc()).first()
+        scrape_logs  = ScrapeLog.query.order_by(ScrapeLog.started_at.desc()).limit(5).all()
         total_fb     = ChatLog.query.filter(ChatLog.feedback != None).count()
         positive     = ChatLog.query.filter(ChatLog.feedback == 1).count()
         satisfaction = round(positive / total_fb * 100, 1) if total_fb > 0 else None
         return jsonify({
-            "total_chats":    total_chats,
-            "today_chats":    today_chats,
-            "feedback_positive": positive,   
-            "scraped_pages":  ScrapedPage.query.count(),
-            "total_sessions": db.session.query(func.count(func.distinct(ChatLog.session_id))).scalar() or 0,
-            "feedback_total": total_fb,
-            "satisfaction":   satisfaction,
-            "daily_chart":    daily,
-            "top_questions":  [{"question": q, "count": c} for q, c in top_questions],
+            "total_chats":       total_chats,
+            "today_chats":       today_chats,
+            "feedback_positive": positive,
+            "scraped_pages":     ScrapedPage.query.count(),
+            "total_sessions":    db.session.query(func.count(func.distinct(ChatLog.session_id))).scalar() or 0,
+            "feedback_total":    total_fb,
+            "satisfaction":      satisfaction,
+            "daily_chart":       daily,
+            "top_questions":     [{"question": q, "count": c} for q, c in top_questions],
             "last_scrape": {
                 "status":      last_scrape.status if last_scrape else "ยังไม่เคย scrape",
                 "finished_at": last_scrape.finished_at.strftime("%d/%m/%Y %H:%M") if last_scrape and last_scrape.finished_at else "-",
@@ -482,7 +575,6 @@ def api_admin_stats():
 @app.route("/api/admin/chatlogs")
 @admin_required
 def api_chatlogs():
-    """ดู chat log ย้อนหลัง พร้อม pagination"""
     page     = request.args.get("page", 1, type=int)
     per_page = 20
     logs = ChatLog.query.order_by(ChatLog.timestamp.desc()).paginate(
@@ -504,7 +596,6 @@ def api_chatlogs():
 @app.route("/api/admin/chatlogs/export")
 @admin_required
 def export_chatlogs():
-    """Export chat log เป็น CSV"""
     import csv, io
     logs = ChatLog.query.order_by(ChatLog.timestamp.desc()).all()
     output = io.StringIO()
@@ -516,25 +607,10 @@ def export_chatlogs():
     output.seek(0)
     from flask import Response
     return Response(
-        "﻿" + output.getvalue(),  # BOM สำหรับ Excel ภาษาไทย
+        "\ufeff" + output.getvalue(),
         mimetype="text/csv",
         headers={"Content-Disposition": "attachment; filename=chat_logs.csv"}
     )
-
-@app.route("/api/feedback", methods=["POST"])
-def save_feedback():
-    """รับ feedback 👍👎 จาก user"""
-    data   = request.get_json(silent=True)
-    log_id = data.get("log_id")
-    score  = data.get("score")  # 1 หรือ -1
-    if not log_id or score not in (1, -1):
-        return jsonify({"error": "invalid"}), 400
-    log = ChatLog.query.get(log_id)
-    if not log:
-        return jsonify({"error": "not found"}), 404
-    log.feedback = score
-    db.session.commit()
-    return jsonify({"ok": True})
 
 @app.route("/admin/scrape", methods=["POST"])
 @admin_required
@@ -555,14 +631,10 @@ def scrape_status():
 # ──────────────────────────────────────────
 # Startup
 # ──────────────────────────────────────────
-# ── Startup logic (รันตอน import โดย gunicorn ด้วย) ──────────
 def initialize_app():
-    """เรียกตอน startup ทั้ง local และ Render/gunicorn"""
     with app.app_context():
-        # Step 1: สร้าง table ใหม่ที่ยังไม่มี
         db.create_all()
 
-        # เปิด WAL mode เฉพาะเมื่อใช้ SQLite
         if db.engine.name == 'sqlite':
             try:
                 from sqlalchemy import text
@@ -574,12 +646,10 @@ def initialize_app():
             except Exception as e:
                 print(f"[DB] WAL setup error: {e}")
 
-        # Step 2: Auto-migrate column ที่อาจขาดใน DB เก่า
         try:
             from sqlalchemy import text, inspect
             inspector = inspect(db.engine)
             columns = [col['name'] for col in inspector.get_columns('chat_log')]
-            
             if "feedback" not in columns:
                 with db.engine.connect() as conn:
                     conn.execute(text("ALTER TABLE chat_log ADD COLUMN feedback INTEGER"))
@@ -589,11 +659,11 @@ def initialize_app():
                 print("[Migration] Schema OK")
         except Exception as e:
             print(f"[Migration] Error: {e}")
+
         print(f"[PDF] Found {len(ALL_PDFS)} files")
         count = ScrapedPage.query.count()
         if count == 0:
             print("[Startup] DB ว่าง → scrape ทันที")
-            # บน production (Render) ให้ delay scrape 30 วิ รอ DB พร้อมก่อน
             is_production = os.environ.get("FLASK_ENV") == "production"
             if is_production:
                 def delayed_scrape():
@@ -607,12 +677,11 @@ def initialize_app():
             load_context_from_db()
     start_scheduler()
 
-# gunicorn import module นี้โดยตรง ต้องเรียก initialize_app() ที่ระดับ module
 import os as _os
 if _os.environ.get("WERKZEUG_RUN_MAIN") != "true":
     initialize_app()
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
+    port  = int(os.environ.get("PORT", 10000))
     debug = _os.environ.get("FLASK_ENV") != "production"
     app.run(host="0.0.0.0", port=port, debug=debug, use_reloader=False)

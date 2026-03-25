@@ -3,131 +3,173 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>เข้าสู่ระบบ - Science Sriracha</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/auth.css') }}">
+    <title>เข้าสู่ระบบ - Science Assistant</title>
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='img/logo.png') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Sarabun', 'Sukhumvit Set', 'Thonburi', sans-serif;
+            background: linear-gradient(135deg, #0d3d28 0%, #1a5f3f 50%, #2d8659 100%);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .card {
+            background: white;
+            border-radius: 16px;
+            padding: 40px 36px;
+            max-width: 400px;
+            width: 100%;
+            text-align: center;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.25);
+        }
+
+        .logo-wrap {
+            width: 72px;
+            height: 72px;
+            background: #f0fdf4;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 20px;
+            border: 3px solid #bbf7d0;
+            overflow: hidden;
+        }
+
+        .logo-wrap img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+
+        h1 {
+            font-size: 1.3rem;
+            font-weight: 700;
+            color: #1a5f3f;
+            margin-bottom: 6px;
+        }
+
+        .subtitle {
+            font-size: 0.88rem;
+            color: #6b7280;
+            margin-bottom: 30px;
+            line-height: 1.5;
+        }
+
+        .divider {
+            border: none;
+            border-top: 1px solid #e5e7eb;
+            margin: 24px 0;
+        }
+
+        .info-box {
+            background: #f0fdf4;
+            border: 1px solid #bbf7d0;
+            border-radius: 10px;
+            padding: 14px 16px;
+            margin-bottom: 24px;
+            text-align: left;
+        }
+
+        .info-box p {
+            font-size: 0.82rem;
+            color: #374151;
+            line-height: 1.6;
+        }
+
+        .info-box i {
+            color: #1a5f3f;
+            margin-right: 6px;
+        }
+
+        .line-btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            width: 100%;
+            padding: 14px 20px;
+            background: #06C755;
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 1rem;
+            font-weight: 700;
+            cursor: pointer;
+            text-decoration: none;
+            transition: all 0.2s;
+            font-family: inherit;
+        }
+
+        .line-btn:hover {
+            background: #05a847;
+            transform: translateY(-1px);
+            box-shadow: 0 6px 20px rgba(6, 199, 85, 0.35);
+        }
+
+        .line-btn:active { transform: translateY(0); }
+
+        .line-btn svg {
+            width: 22px;
+            height: 22px;
+            flex-shrink: 0;
+        }
+
+        .footer-note {
+            margin-top: 20px;
+            font-size: 0.75rem;
+            color: #9ca3af;
+            line-height: 1.6;
+        }
+
+        .ku-brand {
+            margin-top: 32px;
+            font-size: 0.75rem;
+            color: rgba(255,255,255,0.6);
+            text-align: center;
+        }
+
+        @media (max-width: 480px) {
+            .card { padding: 32px 24px; }
+        }
+    </style>
 </head>
 <body>
-    <div class="auth-container">
-        <div class="auth-card">
-            <div class="auth-header">
-                <img src="{{ url_for('static', filename='img/logo.png') }}" alt="Logo" class="auth-logo">
-                <h1>เข้าสู่ระบบ</h1>
-                <p>Science Sriracha AI Assistant</p>
-            </div>
-
-            {% with messages = get_flashed_messages(with_categories=true) %}
-                {% if messages %}
-                    {% for category, message in messages %}
-                        <div class="alert alert-{{ category }}">
-                            {{ message }}
-                        </div>
-                    {% endfor %}
-                {% endif %}
-            {% endwith %}
-
-            <form method="POST" action="{{ url_for('login') }}" class="auth-form">
-                <div class="form-group">
-                    <label for="username">
-                        <i class="fas fa-user"></i> ชื่อผู้ใช้
-                    </label>
-                    <input 
-                        type="text" 
-                        id="username" 
-                        name="username" 
-                        placeholder="กรอกชื่อผู้ใช้"
-                        required
-                    >
-                </div>
-
-                <div class="form-group">
-                    <label for="password">
-                        <i class="fas fa-lock"></i> รหัสผ่าน
-                    </label>
-                    <input 
-                        type="password" 
-                        id="password" 
-                        name="password" 
-                        placeholder="กรอกรหัสผ่าน"
-                        required
-                    >
-                </div>
-
-                <button type="submit" class="btn-submit">
-                    เข้าสู่ระบบ
-                </button>
-            </form>
-
-            <div class="auth-footer">
-                <p>ยังไม่มีบัญชี? <a href="{{ url_for('register') }}">สมัครสมาชิก</a></p>
-                <p><a href="{{ url_for('home') }}">← กลับหน้าแรก</a></p>
-            </div>
+    <div class="card">
+        <div class="logo-wrap">
+            <img src="{{ url_for('static', filename='img/logo.png') }}" alt="KU Logo">
         </div>
-    </div>
-</body>
-</html><!DOCTYPE html>
-<html lang="th">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>เข้าสู่ระบบ - Science Sriracha</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='css/auth.css') }}">
-</head>
-<body>
-    <div class="auth-container">
-        <div class="auth-card">
-            <div class="auth-header">
-                <img src="{{ url_for('static', filename='img/logo.png') }}" alt="Logo" class="auth-logo">
-                <h1>เข้าสู่ระบบ</h1>
-                <p>Science Sriracha AI Assistant</p>
-            </div>
 
-            {% with messages = get_flashed_messages(with_categories=true) %}
-                {% if messages %}
-                    {% for category, message in messages %}
-                        <div class="alert alert-{{ category }}">
-                            {{ message }}
-                        </div>
-                    {% endfor %}
-                {% endif %}
-            {% endwith %}
+        <h1>Science Assistant</h1>
+        <p class="subtitle">ระบบสารสนเทศนิสิต<br>คณะวิทยาศาสตร์ มก. ศรีราชา</p>
 
-            <form method="POST" action="{{ url_for('login') }}" class="auth-form">
-                <div class="form-group">
-                    <label for="username">
-                        <i class="fas fa-user"></i> ชื่อผู้ใช้
-                    </label>
-                    <input 
-                        type="text" 
-                        id="username" 
-                        name="username" 
-                        placeholder="กรอกชื่อผู้ใช้"
-                        required
-                    >
-                </div>
-
-                <div class="form-group">
-                    <label for="password">
-                        <i class="fas fa-lock"></i> รหัสผ่าน
-                    </label>
-                    <input 
-                        type="password" 
-                        id="password" 
-                        name="password" 
-                        placeholder="กรอกรหัสผ่าน"
-                        required
-                    >
-                </div>
-
-                <button type="submit" class="btn-submit">
-                    เข้าสู่ระบบ
-                </button>
-            </form>
-
-            <div class="auth-footer">
-                <p>ยังไม่มีบัญชี? <a href="{{ url_for('register') }}">สมัครสมาชิก</a></p>
-                <p><a href="{{ url_for('home') }}">← กลับหน้าแรก</a></p>
-            </div>
+        <div class="info-box">
+            <p><i class="fas fa-shield-alt"></i>ระบบนี้สำหรับนิสิตและบุคลากรเท่านั้น</p>
+            <p style="margin-top:6px;"><i class="fas fa-user-check"></i>กรุณายืนยันตัวตนด้วย LINE เพื่อเข้าใช้งาน</p>
         </div>
+
+        <a href="/auth/line" class="line-btn">
+            <svg viewBox="0 0 24 24" fill="white" xmlns="http://www.w3.org/2000/svg">
+                <path d="M12 2C6.48 2 2 6.03 2 11c0 3.44 2.05 6.45 5.13 8.18-.07.47-.46 2.28-.53 2.62-.08.43.16.43.33.31.14-.09 2.19-1.45 3.08-2.04.65.09 1.32.13 2 .13 5.52 0 10-4.03 10-9S17.52 2 12 2z"/>
+            </svg>
+            เข้าสู่ระบบด้วย LINE
+        </a>
+
+        <p class="footer-note">
+            ข้อมูลของคุณจะถูกใช้เพื่อยืนยันตัวตนเท่านั้น<br>
+            ไม่มีการส่งข้อมูลให้บุคคลภายนอก
+        </p>
     </div>
+
+    <p class="ku-brand">
+        พัฒนาโดยนิสิตคณะวิทยาศาสตร์ มหาวิทยาลัยเกษตรศาสตร์ ศรีราชา
+    </p>
 </body>
 </html>

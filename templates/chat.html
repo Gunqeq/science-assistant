@@ -783,6 +783,55 @@
                 gap: 5px;
             }
         }
+        .line-user-info {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .line-avatar {
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            border: 2px solid rgba(255,255,255,0.5);
+            object-fit: cover;
+        }
+        .line-avatar-placeholder {
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            background: #06C755;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.78rem;
+            font-weight: 700;
+            color: white;
+            flex-shrink: 0;
+        }
+        .line-display-name {
+            font-size: 0.85rem;
+            color: rgba(255,255,255,0.9);
+            max-width: 130px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .logout-btn {
+            padding: 5px 12px;
+            background: rgba(255,255,255,0.15);
+            border: 1px solid rgba(255,255,255,0.3);
+            color: white;
+            border-radius: 6px;
+            font-size: 0.8rem;
+            cursor: pointer;
+            font-family: inherit;
+            text-decoration: none;
+            transition: all 0.2s;
+        }
+        .logout-btn:hover { background: rgba(255,255,255,0.25); }
+        @media (max-width: 768px) {
+            .line-display-name { display: none; }
+        }
     </style>
 </head>
 <body>
@@ -803,6 +852,16 @@
                     <h1>ระบบสารสนเทศนิสิต</h1>
                     <p>คณะวิทยาศาสตร์ มหาวิทยาลัยเกษตรศาสตร์ ศรีราชา  </p>
                 </div>
+            </div>
+
+            <div class="line-user-info">
+                {% if session.get('line_picture') %}
+                    <img src="{{ session.line_picture }}" alt="avatar" class="line-avatar">
+                {% else %}
+                    <div class="line-avatar-placeholder">{{ session.get('line_display_name', 'U')[0] }}</div>
+                {% endif %}
+                <span class="line-display-name">{{ session.get('line_display_name', 'นิสิต') }}</span>
+                <a href="/auth/line/logout" class="logout-btn">ออกจากระบบ</a>
             </div>
         </div>
     </header>
