@@ -364,7 +364,10 @@ def line_callback():
     flask_session["line_picture"]      = profile.get("pictureUrl")
     return redirect(url_for("index"))
 
-
+@app.route("/auth/line/logout")
+def line_logout():
+    flask_session.clear()
+    return redirect("/login")
 
 @app.route("/api/top_questions")
 def api_top_questions():
