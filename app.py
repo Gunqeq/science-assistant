@@ -253,11 +253,18 @@ def clean_response(text):
     return re.sub(r"\n\s*\n\s*\n", "\n\n", text).strip()
 
 def ask_gemini(user_message, history=None):
+    # กรองเฉพาะหน้าที่เกี่ยวข้องกับคำถาม
     context_str = ""
     if CHAT_CONTEXT:
+        kw = user_message.lower().split()
+        filtered = [
+            d for d in CHAT_CONTEXT
+            if any(w in d["content"].lower() or w in d.get("category","").lower() for w in kw if len(w) > 1)
+        ]
+        docs_to_use = filtered[:8] if filtered else CHAT_CONTEXT[:5]
         context_str = "\n\nRelevant Information:\n"
-        for doc in CHAT_CONTEXT:
-            context_str += f"Source: {doc['source']} ({doc['category']})\nContent: {doc['content'][:4000]}\n\n"
+        for doc in docs_to_use:
+            context_str += f"Source: {doc['source']} ({doc['category']})\nContent: {doc['content'][:2000]}\n\n"
 
     system = f"""{prompt}
 {context_str}
