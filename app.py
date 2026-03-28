@@ -54,9 +54,8 @@ ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "sci1234")
 
 # Gemini
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
+GEMINI_API_KEY  = os.getenv("GEMINI_API_KEY")
+GEMINI_API_KEY2 = os.getenv("GEMINI_API_KEY2")
 
 # LINE Login
 LINE_CLIENT_ID     = os.getenv("LINE_CLIENT_ID")
@@ -293,7 +292,21 @@ def ask_gemini(user_message, history=None):
             messages.append({"role": h["role"], "parts": [{"text": h["parts"]}]})
     messages.append({"role": "user", "parts": [{"text": user_message}]})
 
-    raw = model.generate_content(messages)
+    def _call_gemini(api_key):
+        genai.configure(api_key=api_key)
+        m = genai.GenerativeModel(model_name="gemini-flash-latest", system_instruction=system)
+        return m.generate_content(messages)
+
+    # ลอง key แรกก่อน ถ้าพังสลับ key 2 อัตโนมัติ
+    try:
+        raw = _call_gemini(GEMINI_API_KEY)
+    except Exception as e1:
+        print(f"[Gemini] Key1 failed: {e1}")
+        if GEMINI_API_KEY2:
+            print("[Gemini] Switching to Key2...")
+            raw = _call_gemini(GEMINI_API_KEY2)
+        else:
+            raise e1
     raw_text = re.sub(r"^```json\s*\n?", "", raw.text.strip(), flags=re.MULTILINE)
     raw_text = re.sub(r"\n?```\s*$", "", raw_text, flags=re.MULTILINE).strip()
     parsed = json.loads(raw_text)
