@@ -416,17 +416,35 @@ def chat():
         return render_template("chat.html")
     data = request.get_json(silent=True)
     if not data or "message" not in data:
-        return jsonify({"response": "Invalid request"}), 400
+        return jsonify({"response": "ขออภัยครับ ข้อมูลไม่ถูกต้อง", "suggested_files": []}), 400
     if not GEMINI_API_KEY:
-        return jsonify({"response": "ยังไม่ได้ตั้งค่า API Key", "suggested_files": []})
+        return jsonify({"response": "ขออภัยครับ ระบบยังไม่พร้อมใช้งาน กรุณาติดต่อผู้ดูแลระบบ", "suggested_files": []})
+
+    # ── Rate limit: จำกัด 30 ข้อความ/นาที ต่อ session ──
     session_id = data.get("session_id") or request.headers.get("X-Session-Id", "anonymous")
-    history    = data.get("history", [])
+    now = datetime.utcnow()
+    one_min_ago = now - _td(minutes=1)
+    recent_count = ChatLog.query.filter(
+        ChatLog.session_id == session_id,
+        ChatLog.timestamp >= one_min_ago
+    ).count()
+    if recent_count >= 30:
+        return jsonify({"response": "ขออภัยครับ คุณส่งข้อความถี่เกินไป กรุณารอสักครู่แล้วลองใหม่ครับ", "suggested_files": []})
+
+    # ── ตรวจสอบความยาวข้อความ ──
+    user_msg = data["message"].strip()
+    if not user_msg:
+        return jsonify({"response": "กรุณาพิมพ์คำถามครับ", "suggested_files": []})
+    if len(user_msg) > 1000:
+        return jsonify({"response": "ขออภัยครับ ข้อความยาวเกินไป กรุณาพิมพ์คำถามให้สั้นลงครับ", "suggested_files": []})
+
+    history = data.get("history", [])
     try:
-        bot_text, files, links = ask_gemini(data["message"], history=history)
+        bot_text, files, links = ask_gemini(user_msg, history=history)
         log = None
         try:
             log = ChatLog(
-                user_message = data["message"],
+                user_message = user_msg,
                 bot_answer   = bot_text,
                 session_id   = session_id,
                 user_id      = None,
@@ -439,7 +457,7 @@ def chat():
         return jsonify({"response": bot_text, "suggested_files": files, "suggested_links": links, "log_id": log.id if log else None})
     except Exception as e:
         print(f"[Chat Error] {e}")
-        return jsonify({"response": "ขออภัยครับ เกิดข้อผิดพลาด", "suggested_files": []})
+        return jsonify({"response": "ขออภัยครับ ระบบขัดข้องชั่วคราว กรุณาลองใหม่อีกครั้งครับ", "suggested_files": []})
 
 @app.route("/downloads")
 @login_required
