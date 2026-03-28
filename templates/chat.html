@@ -1052,17 +1052,25 @@
         let shownLinkUrls = new Set();
 
         const LINK_STYLES = {
-            mytcas:  { bg:'#fce7f3', color:'#db2777', border:'#db2777', icon:'fa-graduation-cap' },
-            regis:   { bg:'#ffedd5', color:'#ea580c', border:'#ea580c', icon:'fa-clipboard-list' },
-            'ku.ac': { bg:'#dcfce7', color:'#16a34a', border:'#16a34a', icon:'fa-flask' },
-            'my.ku': { bg:'#dbeafe', color:'#2563eb', border:'#2563eb', icon:'fa-user-circle' },
-            default: { bg:'#f3e8ff', color:'#7c3aed', border:'#7c3aed', icon:'fa-external-link-alt' },
+            mytcas:       { bg:'#fce7f3', color:'#db2777', border:'#db2777', icon:'fa-graduation-cap' },
+            'admissions': { bg:'#fce7f3', color:'#db2777', border:'#db2777', icon:'fa-graduation-cap' },
+            regis:        { bg:'#ffedd5', color:'#ea580c', border:'#ea580c', icon:'fa-clipboard-list' },
+            'my.ku':      { bg:'#dbeafe', color:'#2563eb', border:'#2563eb', icon:'fa-user-circle' },
+            'myku':       { bg:'#dbeafe', color:'#2563eb', border:'#2563eb', icon:'fa-user-circle' },
+            'sci.src.ku': { bg:'#dcfce7', color:'#16a34a', border:'#16a34a', icon:'fa-flask' },
+            'ku.ac':      { bg:'#dcfce7', color:'#16a34a', border:'#16a34a', icon:'fa-university' },
+            default:      { bg:'#f3e8ff', color:'#7c3aed', border:'#7c3aed', icon:'fa-external-link-alt' },
         };
         function getLinkStyle(url) {
+            const u = url.toLowerCase();
             for (const [key, style] of Object.entries(LINK_STYLES)) {
-                if (url.includes(key)) return style;
+                if (key !== 'default' && u.includes(key)) return style;
             }
             return LINK_STYLES.default;
+        }
+
+        function normalizeUrl(url) {
+            return url.toLowerCase().replace(/\/+$/, '').trim();
         }
 
         function showSuggestedLinks(links) {
@@ -1071,16 +1079,21 @@
             const section = document.getElementById('suggested-links-section');
             const list    = document.getElementById('suggested-links-list');
 
-            const newLinks = links.filter(l => !shownLinkUrls.has(l.url));
+            // กรอง duplicate ด้วย normalized URL
+            const newLinks = links.filter(l => {
+                const norm = normalizeUrl(l.url || '');
+                if (!norm || shownLinkUrls.has(norm)) return false;
+                shownLinkUrls.add(norm);
+                return true;
+            });
             if (newLinks.length === 0) return;
 
             newLinks.forEach(link => {
-                shownLinkUrls.add(link.url);
                 const s = getLinkStyle(link.url);
-
                 const el = document.createElement('a');
                 el.href   = link.url;
                 el.target = '_blank';
+                el.rel    = 'noopener noreferrer';
                 el.style.textDecoration = 'none';
                 el.innerHTML = `
                     <div class="quick-link" style="margin-bottom:6px;border-left:3px solid ${s.border};">
