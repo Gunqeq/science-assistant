@@ -256,11 +256,31 @@ def ask_gemini(user_message, history=None):
     context_str = ""
     if CHAT_CONTEXT:
         kw = user_message.lower().split()
+
+        # keyword ที่บ่งบอกว่าถามเรื่องปฏิทิน/วันที่
+        CALENDAR_TRIGGERS = [
+            "วัน", "ปฏิทิน", "สอบ", "ลงทะเบียน", "ถอน", "drop", "add",
+            "ประเมิน", "กลางภาค", "ไล่", "เปิด", "ปิด", "ภาค", "ปี", "semester",
+            "registration", "exam", "final", "midterm", "calendar", "68", "69", "2568", "2569"
+        ]
+        is_calendar_question = any(t in user_message.lower() for t in CALENDAR_TRIGGERS)
+
+        # ดึง calendar docs แยกไว้ก่อน
+        calendar_docs = [d for d in CHAT_CONTEXT if d.get("category") == "ปฏิทินการศึกษา"]
+
+        # กรอง context ปกติ
         filtered = [
             d for d in CHAT_CONTEXT
             if any(w in d["content"].lower() or w in d.get("category","").lower() for w in kw if len(w) > 1)
         ]
-        docs_to_use = filtered[:8] if filtered else CHAT_CONTEXT[:5]
+
+        # ถ้าถามเรื่องปฏิทิน → ใส่ calendar docs ก่อนเสมอ แม้จะไม่ match keyword
+        if is_calendar_question:
+            cal_not_in_filtered = [d for d in calendar_docs if d not in filtered]
+            docs_to_use = (cal_not_in_filtered + filtered)[:8]
+        else:
+            docs_to_use = filtered[:8] if filtered else CHAT_CONTEXT[:5]
+
         context_str = "\n\nRelevant Information:\n"
         for doc in docs_to_use:
             context_str += f"Source: {doc['source']} ({doc['category']})\nContent: {doc['content'][:2000]}\n\n"
