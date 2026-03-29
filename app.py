@@ -277,13 +277,13 @@ def ask_gemini(user_message, history=None):
         # ถ้าถามเรื่องปฏิทิน → ใส่ calendar docs ก่อนเสมอ แม้จะไม่ match keyword
         if is_calendar_question:
             cal_not_in_filtered = [d for d in calendar_docs if d not in filtered]
-            docs_to_use = (cal_not_in_filtered + filtered)[:8]
+            docs_to_use = (cal_not_in_filtered + filtered)[:5]
         else:
-            docs_to_use = filtered[:8] if filtered else CHAT_CONTEXT[:5]
+            docs_to_use = filtered[:5] if filtered else CHAT_CONTEXT[:3]
 
         context_str = "\n\nRelevant Information:\n"
         for doc in docs_to_use:
-            context_str += f"Source: {doc['source']} ({doc['category']})\nContent: {doc['content'][:2000]}\n\n"
+            context_str += f"Source: {doc['source']} ({doc['category']})\nContent: {doc['content'][:1000]}\n\n"
 
     system = f"""{prompt}
 {context_str}
