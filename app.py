@@ -56,6 +56,7 @@ ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "sci1234")
 # Gemini
 GEMINI_API_KEY  = os.getenv("GEMINI_API_KEY")
 GEMINI_API_KEY2 = os.getenv("GEMINI_API_KEY2")
+GEMINI_API_KEY3 = os.getenv("GEMINI_API_KEY3")
 
 # LINE Login
 LINE_CLIENT_ID     = os.getenv("LINE_CLIENT_ID")
@@ -297,14 +298,22 @@ def ask_gemini(user_message, history=None):
         m = genai.GenerativeModel(model_name="gemini-flash-latest", system_instruction=system)
         return m.generate_content(messages)
 
-    # ลอง key แรกก่อน ถ้าพังสลับ key 2 อัตโนมัติ
+    # ลอง key แรกก่อน ถ้าพังสลับ key 2 และ key 3 อัตโนมัติ
     try:
         raw = _call_gemini(GEMINI_API_KEY)
     except Exception as e1:
         print(f"[Gemini] Key1 failed: {e1}")
         if GEMINI_API_KEY2:
-            print("[Gemini] Switching to Key2...")
-            raw = _call_gemini(GEMINI_API_KEY2)
+            try:
+                print("[Gemini] Switching to Key2...")
+                raw = _call_gemini(GEMINI_API_KEY2)
+            except Exception as e2:
+                print(f"[Gemini] Key2 failed: {e2}")
+                if GEMINI_API_KEY3:
+                    print("[Gemini] Switching to Key3...")
+                    raw = _call_gemini(GEMINI_API_KEY3)
+                else:
+                    raise e2
         else:
             raise e1
     raw_text = re.sub(r"^```json\s*\n?", "", raw.text.strip(), flags=re.MULTILINE)
