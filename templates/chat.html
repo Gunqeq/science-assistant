@@ -920,7 +920,22 @@
 
         <!-- Sidebar -->
         <aside class="sidebar">
-            <!-- Quick Links -->
+            <!-- Bot Suggested Links (shown only when bot provides links) -->
+            <div class="card" id="suggested-links-card" style="display:none;">
+                <div class="card-header">
+                    <div class="card-title">
+                        <i class="fas fa-search"></i>
+                        ผลลัพธ์การค้นหา
+                    </div>
+                </div>
+                <div class="card-content quick-links" id="quick-links-container">
+                    <div id="suggested-links-section">
+                        <div id="suggested-links-list"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Static Quick Links -->
             <div class="card">
                 <div class="card-header">
                     <div class="card-title">
@@ -928,15 +943,7 @@
                         ทางลัด
                     </div>
                 </div>
-                <div class="card-content quick-links" id="quick-links-container">
-                    <!-- Bot suggested links will appear here -->
-                    <div id="suggested-links-section" style="display:none; margin-bottom: 8px;">
-                        <div style="font-size:0.8rem;color:#6b7280;padding:6px 10px;background:#f0fdf4;border-radius:4px;border-left:3px solid #1a5f3f;margin-bottom:8px;">
-                            <i class="fas fa-link" style="color:#1a5f3f;"></i> ลิงค์ที่เกี่ยวข้อง
-                        </div>
-                        <div id="suggested-links-list"></div>
-                        <hr style="margin: 10px 0; border-color: #e5e7eb;">
-                    </div>
+                <div class="card-content quick-links">
                     <a href="https://my.ku.th/myku/myku?intent=/" target="_blank" style="text-decoration: none;">
                         <div class="quick-link">
                             <div class="quick-link-icon">
@@ -1110,7 +1117,8 @@
                 list.appendChild(el);
             });
 
-            section.style.display = 'block';
+            // แสดง card ลิงค์ที่เกี่ยวข้อง
+            document.getElementById('suggested-links-card').style.display = 'block';
         }
 
         // Download PDF
