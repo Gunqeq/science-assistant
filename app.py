@@ -305,7 +305,7 @@ def ask_gemini(user_message, history=None):
 - ถ้าไม่มีลิงค์ที่เกี่ยวข้องให้ใส่ []
 - ห้ามแต่งชื่อไฟล์เอง
 """
-    model = genai.GenerativeModel(model_name="gemini-2.0-flash", system_instruction=system)
+    model = genai.GenerativeModel(model_name="gemini-flash-latest", system_instruction=system)
     messages = []
     if history:
         for h in history[-10:]:
@@ -314,7 +314,7 @@ def ask_gemini(user_message, history=None):
 
     def _call_gemini(api_key):
         genai.configure(api_key=api_key)
-        m = genai.GenerativeModel(model_name="gemini-2.0-flash", system_instruction=system)
+        m = genai.GenerativeModel(model_name="gemini-flash-latest", system_instruction=system)
         return m.generate_content(messages)
 
     # ลอง key แรกก่อน ถ้าพังสลับ key 2 อัตโนมัติ
