@@ -751,7 +751,43 @@ def initialize_app():
         else:
             print(f"[Startup] DB มี {count} หน้า → โหลดจาก DB ข้าม scrape")
             load_context_from_db()
+
+        # โหลด PDF หลักสูตรเข้า context
+        load_curriculum_pdfs()
     start_scheduler()
+
+def load_curriculum_pdfs():
+    """อ่าน PDF จาก static/curriculum/ แล้วเพิ่มเข้า CHAT_CONTEXT"""
+    global CHAT_CONTEXT
+    curriculum_dir = os.path.join(os.path.dirname(__file__), "static", "curriculum")
+    if not os.path.exists(curriculum_dir):
+        print("[Curriculum] ไม่พบ folder static/curriculum/ ข้าม")
+        return
+    count = 0
+    for fn in sorted(os.listdir(curriculum_dir)):
+        if not fn.endswith(".pdf"):
+            continue
+        path = os.path.join(curriculum_dir, fn)
+        try:
+            reader = PdfReader(path)
+            text = ""
+            for page in reader.pages:
+                text += page.extract_text() or ""
+            if len(text) < 100:
+                continue
+            # แบ่งเป็น chunk ละ 8,000 ตัวอักษร
+            chunk_size = 8000
+            for i in range(0, len(text), chunk_size):
+                CHAT_CONTEXT.append({
+                    "source":   fn,
+                    "category": "หลักสูตร",
+                    "content":  text[i:i + chunk_size]
+                })
+            count += 1
+            print(f"[Curriculum] Loaded: {fn} ({len(text)} chars)")
+        except Exception as e:
+            print(f"[Curriculum] Error reading {fn}: {e}")
+    print(f"[Curriculum] รวม {count} ไฟล์ถูกโหลดเข้า context")
 
 import os as _os
 if _os.environ.get("WERKZEUG_RUN_MAIN") != "true":
