@@ -135,8 +135,65 @@ def get_kusrc_data():
 
         time.sleep(0.8)
 
+    # ── ดึงปฏิทินการศึกษาเพิ่มเติม ──
+    print("\n[Scraper] Scraping academic calendar...")
+    calendar_docs = scrape_calendar()
+    documents.extend(calendar_docs)
+    print(f"[Scraper] Calendar: {len(calendar_docs)} tabs scraped")
+
     print(f"\n[Scraper] Total: {len(documents)} pages scraped")
     return documents
+
+
+def scrape_calendar():
+    """
+    ดึงปฏิทินการศึกษาจาก regis.src.ku.ac.th
+    รองรับทั้ง 3 แท็บ: ภาคปกติ (Thai), บัณฑิตศึกษา (Graduate), นานาชาติ (International)
+    """
+    CALENDAR_URL = "https://regis.src.ku.ac.th/res/calender.php"
+    TAB_LABELS = {
+        "home":    "ภาคปกติ (Thai Program)",
+        "profile": "บัณฑิตศึกษา (Graduate)",
+        "inter":   "นานาชาติ (International Program)",
+    }
+
+    results = []
+    try:
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        response = requests.get(CALENDAR_URL, headers=headers, timeout=15)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, "html.parser")
+
+        for tab_id, label in TAB_LABELS.items():
+            tab_div = soup.find("div", id=tab_id)
+            if not tab_div:
+                continue
+
+            rows = tab_div.find_all("tr")
+            lines = []
+            for row in rows:
+                cells = [td.get_text(separator=" ", strip=True) for td in row.find_all(["td", "th"])]
+                cells = [c for c in cells if c]
+                if cells:
+                    lines.append(" | ".join(cells))
+
+            if not lines:
+                continue
+
+            content = f"ปฏิทินการศึกษา {label}\nที่มา: {CALENDAR_URL}\n\n"
+            content += "\n".join(lines)
+
+            results.append({
+                "content":  content[:10000],
+                "category": "ปฏิทินการศึกษา",
+                "source":   f"{CALENDAR_URL}#{tab_id}",
+            })
+            print(f"  [Calendar] {label}: {len(lines)} rows")
+
+    except Exception as e:
+        print(f"  [Calendar] Error: {e}")
+
+    return results
 
 
 if __name__ == "__main__":
