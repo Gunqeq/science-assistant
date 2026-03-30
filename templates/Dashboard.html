@@ -338,14 +338,20 @@ function renderTopQuestions(questions) {
 }
 
 // ── Chat Logs ───────────────────────────
-let totalLogs = 0, logsPerPage = 20;
+let totalLogsCount = 0, logsPerPage = 20;
 
 async function loadLogs(page = 1) {
   currentPage = page;
   const r = await fetch(`/api/admin/chatlogs?page=${page}`);
   const d = await r.json();
   allLogs = d.logs;
-  totalLogs = d.total || parseInt((document.getElementById('stat-total').textContent||'0').replace(/,/g,'')) || 0;
+  // ดึง total จาก API ก่อน ถ้าไม่มีใช้จาก stat card
+  if (d.total) {
+    totalLogsCount = d.total;
+  } else {
+    const el = document.getElementById('stat-total');
+    totalLogsCount = parseInt((el ? el.textContent : '0').replace(/,/g,'')) || 0;
+  }
   logsPerPage = d.per_page || allLogs.length || 20;
   renderLogs(allLogs);
   renderPagination(d.pages, page);
@@ -354,7 +360,8 @@ async function loadLogs(page = 1) {
 function renderLogs(logs) {
   const tbody = document.getElementById('log-table');
   if (!logs.length) { tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#9ca3af;padding:20px;">ไม่พบข้อมูล</td></tr>'; return; }
-  const startNum = totalLogs - (currentPage - 1) * logsPerPage;
+  // คำนวณเลขเริ่มต้นของหน้านี้ (นับลง)
+  const startNum = totalLogsCount - (currentPage - 1) * logsPerPage;
   tbody.innerHTML = logs.map((l, i) => `
     <tr>
       <td style="color:#9ca3af">${startNum - i}</td>
