@@ -1186,13 +1186,16 @@
             messageDiv.className = `message ${isUser ? 'user' : 'bot'}`;
             
             if (isUser) {
+                const avatarHtml = LINE_PICTURE
+                    ? `<img src="${LINE_PICTURE}" alt="avatar" style="width:40px;height:40px;border-radius:50%;object-fit:cover;">`
+                    : `<i class="fas fa-user"></i>`;
                 messageDiv.innerHTML = `
                     <div class="message-wrapper">
                         <div class="message-content">${formatMessage(message)}</div>
                         <div class="message-time">${getCurrentTime()}</div>
                     </div>
-                    <div class="message-avatar">
-                        <i class="fas fa-user"></i>
+                    <div class="message-avatar" style="background:transparent;">
+                        ${avatarHtml}
                     </div>
                 `;
             } else {
@@ -1279,6 +1282,9 @@
                 addMessage('ขออภัยครับ ไม่สามารถเชื่อมต่อได้', false);
             }
         });
+
+        // ── LINE Profile Picture ──
+        const LINE_PICTURE = "{{ session.get('line_picture', '') }}";
 
         // ── Session ID (ใช้ per-browser-tab, เก็บใน sessionStorage) ──
         const SESSION_ID = (() => {
