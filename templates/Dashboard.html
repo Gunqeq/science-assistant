@@ -338,11 +338,15 @@ function renderTopQuestions(questions) {
 }
 
 // ── Chat Logs ───────────────────────────
+let totalLogs = 0, logsPerPage = 20;
+
 async function loadLogs(page = 1) {
   currentPage = page;
   const r = await fetch(`/api/admin/chatlogs?page=${page}`);
   const d = await r.json();
   allLogs = d.logs;
+  totalLogs = d.total || parseInt((document.getElementById('stat-total').textContent||'0').replace(/,/g,'')) || 0;
+  logsPerPage = d.per_page || allLogs.length || 20;
   renderLogs(allLogs);
   renderPagination(d.pages, page);
 }
@@ -350,9 +354,10 @@ async function loadLogs(page = 1) {
 function renderLogs(logs) {
   const tbody = document.getElementById('log-table');
   if (!logs.length) { tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#9ca3af;padding:20px;">ไม่พบข้อมูล</td></tr>'; return; }
-  tbody.innerHTML = logs.map(l => `
+  const startNum = totalLogs - (currentPage - 1) * logsPerPage;
+  tbody.innerHTML = logs.map((l, i) => `
     <tr>
-      <td style="color:#9ca3af">${l.id}</td>
+      <td style="color:#9ca3af">${startNum - i}</td>
       <td style="white-space:nowrap;font-size:.8rem">${l.timestamp}</td>
       <td style="font-size:.75rem;color:#6b7280;font-family:monospace">${l.session_id.slice(0,12)}...</td>
       <td>${l.user_message.length > 60 ? l.user_message.slice(0,60)+'...' : l.user_message}</td>
