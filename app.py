@@ -718,7 +718,18 @@ def scrape_status():
 # ──────────────────────────────────────────
 def initialize_app():
     with app.app_context():
-        db.create_all()
+        # Retry DB connection (Render DB อาจยังไม่พร้อมตอน cold start)
+        for attempt in range(5):
+            try:
+                db.create_all()
+                print(f"[DB] Tables ready (attempt {attempt+1})")
+                break
+            except Exception as e:
+                print(f"[DB] Attempt {attempt+1}/5 failed: {e}")
+                if attempt < 4:
+                    time.sleep(3)
+                else:
+                    print("[DB] All attempts failed — continuing without DB init")
 
         if db.engine.name == 'sqlite':
             try:
@@ -799,7 +810,11 @@ def load_curriculum_pdfs():
     print(f"[Curriculum] รวม {count} ไฟล์ถูกโหลดเข้า context")
 
 import os as _os
-if _os.environ.get("WERKZEUG_RUN_MAIN") != "true":
+# WERKZEUG_RUN_MAIN ใช้กับ flask dev reloader เท่านั้น
+# ใน gunicorn ตัวแปรนี้จะไม่มี → ต้องตรวจแบบนี้แทน
+_is_reloader_child = _os.environ.get("WERKZEUG_RUN_MAIN") == "true"
+
+if not _is_reloader_child:
     initialize_app()
 
 if __name__ == "__main__":
