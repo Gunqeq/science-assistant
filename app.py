@@ -203,11 +203,7 @@ def start_scheduler():
             try:
                 with app.app_context():
                     from datetime import timedelta as _td
-                    cutoff = datetime.utcnow() - _td(days=3)
-                    deleted = ChatLog.query.filter(ChatLog.timestamp < cutoff).delete()
-                    db.session.commit()
-                    if deleted:
-                        print(f"[Cleanup] Deleted {deleted} old chat logs")
+                    pass  # ไม่ลบ chat log
             except Exception as ce:
                 print(f"[Cleanup] Error: {ce}")
 
