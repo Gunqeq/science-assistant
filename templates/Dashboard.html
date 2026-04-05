@@ -445,7 +445,7 @@ function renderUsers(users) {
   }
   tbody.innerHTML = users.map((u, i) => `
     <tr>
-      <td style="color:#9ca3af">${u.id}</td>
+      <td style="color:#9ca3af">${(userPage - 1) * 20 + i + 1}</td>
       <td>
         <div style="display:flex;align-items:center;gap:10px;">
           ${u.picture_url

@@ -122,6 +122,7 @@ class LineUser(db.Model):
     picture_url   = db.Column(db.String(300))
     first_login   = db.Column(db.DateTime, default=datetime.utcnow)
     last_login    = db.Column(db.DateTime, default=datetime.utcnow)
+    login_count   = db.Column(db.Integer, default=1)
 
 # ──────────────────────────────────────────
 # In-memory context
@@ -380,12 +381,14 @@ def line_callback():
             line_user_id = profile["userId"],
             display_name = profile.get("displayName"),
             picture_url  = profile.get("pictureUrl"),
+            login_count  = 1,
         )
         db.session.add(user)
     else:
         user.last_login   = datetime.utcnow()
         user.display_name = profile.get("displayName")
         user.picture_url  = profile.get("pictureUrl")
+        user.login_count  = (user.login_count or 1) + 1
     db.session.commit()
 
     flask_session["line_user_id"]      = profile["userId"]
@@ -680,7 +683,6 @@ def api_admin_users():
     )
     result = []
     for u in users.items:
-        days_diff = max(1, (u.last_login - u.first_login).days + 1)
         result.append({
             "id":           u.id,
             "line_user_id": u.line_user_id,
@@ -688,7 +690,7 @@ def api_admin_users():
             "picture_url":  u.picture_url,
             "first_login":  to_thai_time(u.first_login),
             "last_login":   to_thai_time(u.last_login),
-            "login_count":  days_diff,
+            "login_count":  u.login_count or 1,
         })
     return jsonify({
         "users":   result,
@@ -744,6 +746,18 @@ def initialize_app():
                 print("[Migration] Schema OK")
         except Exception as e:
             print(f"[Migration] Error: {e}")
+
+        try:
+            from sqlalchemy import text, inspect
+            inspector = inspect(db.engine)
+            lu_columns = [col['name'] for col in inspector.get_columns('line_users')]
+            if "login_count" not in lu_columns:
+                with db.engine.connect() as conn:
+                    conn.execute(text("ALTER TABLE line_users ADD COLUMN login_count INTEGER DEFAULT 1"))
+                    conn.commit()
+                print("[Migration] Added column: login_count")
+        except Exception as e:
+            print(f"[Migration] login_count Error: {e}")
 
         print(f"[PDF] Found {len(ALL_PDFS)} files")
         count = ScrapedPage.query.count()
