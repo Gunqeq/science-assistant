@@ -780,36 +780,63 @@ def initialize_app():
     start_scheduler()
 
 def load_curriculum_pdfs():
-    """อ่าน PDF จาก static/curriculum/ แล้วเพิ่มเข้า CHAT_CONTEXT"""
+    """โหลด curriculum จาก .txt (OCR) ใน static/curriculum_text/ และ PDF ที่อ่านได้ใน static/curriculum/"""
     global CHAT_CONTEXT
-    curriculum_dir = os.path.join(os.path.dirname(__file__), "static", "curriculum")
-    if not os.path.exists(curriculum_dir):
-        print("[Curriculum] ไม่พบ folder static/curriculum/ ข้าม")
-        return
+    chunk_size = 8000
     count = 0
-    for fn in sorted(os.listdir(curriculum_dir)):
-        if not fn.endswith(".pdf"):
-            continue
-        path = os.path.join(curriculum_dir, fn)
-        try:
-            reader = PdfReader(path)
-            text = ""
-            for page in reader.pages:
-                text += page.extract_text() or ""
-            if len(text) < 100:
+
+    # โหลดจาก txt ที่ OCR ไว้แล้วก่อน
+    txt_dir = os.path.join(os.path.dirname(__file__), "static", "curriculum_text")
+    txt_names = set()
+    if os.path.exists(txt_dir):
+        for fn in sorted(os.listdir(txt_dir)):
+            if not fn.endswith(".txt"):
                 continue
-            # แบ่งเป็น chunk ละ 8,000 ตัวอักษร
-            chunk_size = 8000
-            for i in range(0, len(text), chunk_size):
-                CHAT_CONTEXT.append({
-                    "source":   fn,
-                    "category": "หลักสูตร",
-                    "content":  text[i:i + chunk_size]
-                })
-            count += 1
-            print(f"[Curriculum] Loaded: {fn} ({len(text)} chars)")
-        except Exception as e:
-            print(f"[Curriculum] Error reading {fn}: {e}")
+            path = os.path.join(txt_dir, fn)
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    text = f.read()
+                if len(text) < 100:
+                    print(f"[Curriculum] SKIP (too short): {fn}")
+                    continue
+                for i in range(0, len(text), chunk_size):
+                    CHAT_CONTEXT.append({
+                        "source":   fn,
+                        "category": "หลักสูตร",
+                        "content":  text[i:i + chunk_size]
+                    })
+                txt_names.add(fn.replace(".txt", ".pdf"))
+                count += 1
+                print(f"[Curriculum] Loaded TXT: {fn} ({len(text)} chars)")
+            except Exception as e:
+                print(f"[Curriculum] Error reading {fn}: {e}")
+
+    # โหลด PDF ที่อ่านได้ปกติ (เฉพาะที่ไม่มี txt แล้ว)
+    pdf_dir = os.path.join(os.path.dirname(__file__), "static", "curriculum")
+    if os.path.exists(pdf_dir):
+        for fn in sorted(os.listdir(pdf_dir)):
+            if not fn.endswith(".pdf") or fn in txt_names:
+                continue
+            path = os.path.join(pdf_dir, fn)
+            try:
+                reader = PdfReader(path)
+                text = ""
+                for page in reader.pages:
+                    text += page.extract_text() or ""
+                if len(text) < 100:
+                    print(f"[Curriculum] SKIP (no text): {fn}")
+                    continue
+                for i in range(0, len(text), chunk_size):
+                    CHAT_CONTEXT.append({
+                        "source":   fn,
+                        "category": "หลักสูตร",
+                        "content":  text[i:i + chunk_size]
+                    })
+                count += 1
+                print(f"[Curriculum] Loaded PDF: {fn} ({len(text)} chars)")
+            except Exception as e:
+                print(f"[Curriculum] Error reading {fn}: {e}")
+
     print(f"[Curriculum] รวม {count} ไฟล์ถูกโหลดเข้า context")
 
 import os as _os
