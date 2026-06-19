@@ -369,7 +369,15 @@ def ask_gemini(user_message, history=None):
     if parsed is None:
         return clean_response(raw_text), [], []
     bot_text   = clean_response(parsed.get("response", ""))
-    good_files = [f for f in parsed.get("files", []) if f in ALL_PDFS]
+    def _match_pdf(name):
+        if name in ALL_PDFS:
+            return name
+        nl = name.lower()
+        for f in ALL_PDFS:
+            if nl in f.lower() or f.lower() in nl:
+                return f
+        return None
+    good_files = [m for m in (_match_pdf(f) for f in parsed.get("files", [])) if m]
     links      = parsed.get("links", [])
     good_links = [l for l in links if isinstance(l, dict) and l.get("title") and l.get("url")]
     return bot_text, good_files, good_links
