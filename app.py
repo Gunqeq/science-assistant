@@ -524,6 +524,7 @@ def chat():
     history = data.get("history", [])
     try:
         bot_text, files, links = ask_gemini(user_msg, history=history)
+        print(f"[DEBUG] suggested_files={files} | ALL_PDFS_count={len(ALL_PDFS)}")
         log = None
         try:
             log = ChatLog(
