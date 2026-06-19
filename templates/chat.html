@@ -1020,30 +1020,26 @@
                 .catch(error => console.error('Error loading documents:', error));
         }
 
-        // Display only bot-suggested PDFs in the sidebar
-        let shownFileIds = new Set(); // track ไฟล์ที่แสดงแล้ว
-
+        // Display bot-suggested PDFs in the sidebar (reset each time)
         function showSuggestedFiles(filenames) {
             const placeholder = document.getElementById('downloads-placeholder');
             const content = document.getElementById('downloads-content');
 
-            // Match suggested filenames against loaded PDF data
             const matched = filenames.map(name => {
-                return allPdfData.find(p => p.name === name) 
+                return allPdfData.find(p => p.name === name)
                     || allPdfData.find(p => p.name.toLowerCase().includes(name.toLowerCase()))
                     || { name: name, id: null, category: 'เอกสาร' };
-            }).filter(f => f && !shownFileIds.has(f.name)); // กรองเฉพาะที่ยังไม่แสดง
+            }).filter(Boolean);
 
             if (matched.length === 0) return;
 
-            // ซ่อน placeholder, แสดง content
+            // ล้างไฟล์เก่าออกก่อน แล้วแสดงไฟล์ใหม่
             placeholder.style.display = 'none';
             content.style.display = 'block';
+            content.innerHTML = '<div class="suggested-label" style="font-size:0.8rem;color:#6b7280;margin-bottom:10px;padding:6px 10px;background:#f0fdf4;border-radius:4px;border-left:3px solid #1a5f3f;"><i class="fas fa-lightbulb" style="color:#1a5f3f;"></i> เอกสารที่แนะนำ</div>';
 
-            // เพิ่มไฟล์ใหม่เข้า content
             matched.forEach(pdf => {
-                shownFileIds.add(pdf.name);
-                const clickAction = pdf.id 
+                const clickAction = pdf.id
                     ? `window.location.href='/download/${pdf.id}'`
                     : `alert('ไม่พบไฟล์ในระบบ')`;
                 const item = document.createElement('div');
@@ -1060,15 +1056,6 @@
                 `;
                 content.appendChild(item);
             });
-
-            // เพิ่ม label "เอกสารที่แนะนำ" ถ้ายังไม่มี
-            if (!content.querySelector('.suggested-label')) {
-                const label = document.createElement('div');
-                label.className = 'suggested-label';
-                label.style.cssText = 'font-size:0.8rem;color:#6b7280;margin-bottom:10px;padding:6px 10px;background:#f0fdf4;border-radius:4px;border-left:3px solid #1a5f3f;';
-                label.innerHTML = '<i class="fas fa-lightbulb" style="color:#1a5f3f;"></i> เอกสารที่แนะนำ';
-                content.insertBefore(label, content.firstChild);
-            }
         }
 
         // Show bot-suggested links in quick-links sidebar
