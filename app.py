@@ -274,15 +274,20 @@ def clean_response(text):
     return re.sub(r"\n\s*\n\s*\n", "\n\n", text).strip()
 
 def ask_gemini(user_message, history=None):
-    kw = user_message.lower().split()
+    msg_lower = user_message.lower()
+    # คำค้นจากการ split (ภาษาอังกฤษ/มีช่องว่าง) + 3-gram สำหรับภาษาไทย
+    kw = [w for w in msg_lower.split() if len(w) > 1]
+    compact = msg_lower.replace(" ", "")
+    kw += [compact[i:i+3] for i in range(len(compact) - 2)]
+
+    def _matches(text):
+        t = text.lower()
+        return any(w in t for w in kw)
 
     # กรองเฉพาะหน้าที่เกี่ยวข้องกับคำถาม
     context_str = ""
     if CHAT_CONTEXT:
-        filtered = [
-            d for d in CHAT_CONTEXT
-            if any(w in d["content"].lower() or w in d.get("category","").lower() for w in kw if len(w) > 1)
-        ]
+        filtered = [d for d in CHAT_CONTEXT if _matches(d["content"]) or _matches(d.get("category", ""))]
         docs_to_use = filtered[:8] if filtered else CHAT_CONTEXT[:5]
         context_str = "\n\nRelevant Information:\n"
         for doc in docs_to_use:
@@ -291,10 +296,7 @@ def ask_gemini(user_message, history=None):
     # เพิ่ม FAQ จาก Excel ที่เกี่ยวข้อง
     faq_str = ""
     if FAQ_CONTEXT:
-        matched_faq = [
-            e for e in FAQ_CONTEXT
-            if any(w in e["q"].lower() or w in e["a"].lower() for w in kw if len(w) > 1)
-        ]
+        matched_faq = [e for e in FAQ_CONTEXT if _matches(e["q"]) or _matches(e["a"])]
         if not matched_faq:
             matched_faq = FAQ_CONTEXT[:5]
         faq_str = "\n\nข้อมูล FAQ ที่เกี่ยวข้อง:\n"
