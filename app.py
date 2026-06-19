@@ -351,9 +351,15 @@ def ask_gemini(user_message, history=None):
                     raise e2
         else:
             raise e1
-    raw_text = re.sub(r"^```json\s*\n?", "", raw.text.strip(), flags=re.MULTILINE)
+    raw_text = (raw.text or "").strip()
+    if not raw_text:
+        return "ขออภัยค่ะ ระบบไม่สามารถตอบได้ในขณะนี้ กรุณาลองใหม่อีกครั้ง", [], []
+    raw_text = re.sub(r"^```json\s*\n?", "", raw_text, flags=re.MULTILINE)
     raw_text = re.sub(r"\n?```\s*$", "", raw_text, flags=re.MULTILINE).strip()
-    parsed = json.loads(raw_text)
+    try:
+        parsed = json.loads(raw_text)
+    except json.JSONDecodeError:
+        return clean_response(raw_text), [], []
     bot_text   = clean_response(parsed.get("response", ""))
     good_files = [f for f in parsed.get("files", []) if f in ALL_PDFS]
     links      = parsed.get("links", [])
