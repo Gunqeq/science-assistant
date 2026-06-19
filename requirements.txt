@@ -8,3 +8,4 @@ beautifulsoup4
 PyPDF2
 psycopg2-binary
 authlib
+openpyxl

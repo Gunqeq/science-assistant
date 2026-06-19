@@ -128,6 +128,26 @@ class LineUser(db.Model):
 # In-memory context
 # ──────────────────────────────────────────
 CHAT_CONTEXT = []
+FAQ_CONTEXT = []
+
+_FAQ_EXCEL_PATH = os.path.join(os.path.dirname(__file__), "FAQ_AI_updated.xlsx")
+
+def load_faq_from_excel():
+    global FAQ_CONTEXT
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(_FAQ_EXCEL_PATH)
+        ws = wb.active
+        entries = []
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            q = str(row[1]).strip() if row[1] else ""
+            a = str(row[2]).strip() if row[2] else ""
+            if q and a:
+                entries.append({"q": q, "a": a})
+        FAQ_CONTEXT = entries
+        print(f"[FAQ] Loaded {len(FAQ_CONTEXT)} entries from Excel")
+    except Exception as e:
+        print(f"[FAQ] Failed to load Excel: {e}")
 
 def load_context_from_db():
     global CHAT_CONTEXT
@@ -254,10 +274,11 @@ def clean_response(text):
     return re.sub(r"\n\s*\n\s*\n", "\n\n", text).strip()
 
 def ask_gemini(user_message, history=None):
+    kw = user_message.lower().split()
+
     # กรองเฉพาะหน้าที่เกี่ยวข้องกับคำถาม
     context_str = ""
     if CHAT_CONTEXT:
-        kw = user_message.lower().split()
         filtered = [
             d for d in CHAT_CONTEXT
             if any(w in d["content"].lower() or w in d.get("category","").lower() for w in kw if len(w) > 1)
@@ -267,8 +288,21 @@ def ask_gemini(user_message, history=None):
         for doc in docs_to_use:
             context_str += f"Source: {doc['source']} ({doc['category']})\nContent: {doc['content'][:2000]}\n\n"
 
+    # เพิ่ม FAQ จาก Excel ที่เกี่ยวข้อง
+    faq_str = ""
+    if FAQ_CONTEXT:
+        matched_faq = [
+            e for e in FAQ_CONTEXT
+            if any(w in e["q"].lower() or w in e["a"].lower() for w in kw if len(w) > 1)
+        ]
+        if not matched_faq:
+            matched_faq = FAQ_CONTEXT[:5]
+        faq_str = "\n\nข้อมูล FAQ ที่เกี่ยวข้อง:\n"
+        for e in matched_faq[:10]:
+            faq_str += f"Q: {e['q']}\nA: {e['a']}\n\n"
+
     system = f"""{prompt}
-{context_str}
+{context_str}{faq_str}
 ---
 รายชื่อไฟล์ PDF ที่มีในระบบ (ใช้ชื่อเหล่านี้เท่านั้น):
 {PDF_LIST_STR}
@@ -287,7 +321,7 @@ def ask_gemini(user_message, history=None):
 - ถ้าไม่มีลิงค์ที่เกี่ยวข้องให้ใส่ []
 - ห้ามแต่งชื่อไฟล์เอง
 """
-    model = genai.GenerativeModel(model_name="gemini-flash-latest", system_instruction=system)
+    model = genai.GenerativeModel(model_name="gemini-2.0-flash-lite", system_instruction=system)
     messages = []
     if history:
         for h in history[-10:]:
@@ -296,7 +330,7 @@ def ask_gemini(user_message, history=None):
 
     def _call_gemini(api_key):
         genai.configure(api_key=api_key)
-        m = genai.GenerativeModel(model_name="gemini-flash-latest", system_instruction=system)
+        m = genai.GenerativeModel(model_name="gemini-2.0-flash-lite", system_instruction=system)
         return m.generate_content(messages)
 
     # ลอง key แรกก่อน ถ้าพังสลับ key 2 และ key 3 อัตโนมัติ
@@ -777,6 +811,9 @@ def initialize_app():
 
         # โหลด PDF หลักสูตรเข้า context
         load_curriculum_pdfs()
+
+        # โหลด FAQ จาก Excel
+        load_faq_from_excel()
     start_scheduler()
 
 def load_curriculum_pdfs():
