@@ -540,7 +540,7 @@ async function loadFAQ(page = 1) {
         <td style="font-weight:500">${escHtml(f.question.length>80 ? f.question.slice(0,80)+'...' : f.question)}</td>
         <td style="color:#6b7280">${escHtml(f.answer.length>100 ? f.answer.slice(0,100)+'...' : f.answer)}</td>
         <td>
-          <button class="btn" style="padding:5px 10px;background:#dbeafe;color:#2563eb;font-size:.78rem;margin-right:4px" onclick="editFAQ(${f.id}, ${JSON.stringify(f.question)}, ${JSON.stringify(f.answer)})">
+          <button class="btn" style="padding:5px 10px;background:#dbeafe;color:#2563eb;font-size:.78rem;margin-right:4px" onclick="editFAQ(${f.id}, ${escHtml(JSON.stringify(f.question))}, ${escHtml(JSON.stringify(f.answer))})">
             <i class="fas fa-edit"></i> แก้ไข
           </button>
           <button class="btn btn-danger" style="padding:5px 10px;font-size:.78rem;" onclick="deleteFAQ(${f.id})">
