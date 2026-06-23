@@ -91,6 +91,9 @@ tr:hover td{background:#f9fafb}
   <a class="nav-item" onclick="showPage('users')" href="#">
     <i class="fas fa-users"></i> ผู้ใช้งาน LINE
   </a>
+  <a class="nav-item" onclick="showPage('faq')" href="#">
+    <i class="fas fa-question-circle"></i> จัดการ FAQ
+  </a>
   <a class="nav-item" onclick="showPage('scraper')" href="#">
     <i class="fas fa-sync-alt"></i> จัดการ Scraper
   </a>
@@ -231,6 +234,45 @@ tr:hover td{background:#f9fafb}
     </div>
   </div>
 
+  <!-- FAQ Management Page -->
+  <div class="page" id="page-faq">
+    <!-- Add / Edit Form -->
+    <div class="card" style="margin-bottom:16px;">
+      <div class="card-title"><i class="fas fa-plus-circle"></i> <span id="faq-form-title">เพิ่ม FAQ ใหม่</span></div>
+      <input type="hidden" id="faq-edit-id" value="">
+      <div style="margin-bottom:10px;">
+        <label style="font-size:.85rem;font-weight:600;color:#374151;display:block;margin-bottom:4px;">คำถาม</label>
+        <input id="faq-q" type="text" placeholder="พิมพ์คำถาม..." style="width:100%;padding:9px 14px;border:1px solid #e5e7eb;border-radius:7px;font-size:.9rem;font-family:inherit;outline:none;">
+      </div>
+      <div style="margin-bottom:12px;">
+        <label style="font-size:.85rem;font-weight:600;color:#374151;display:block;margin-bottom:4px;">คำตอบ</label>
+        <textarea id="faq-a" rows="4" placeholder="พิมพ์คำตอบ..." style="width:100%;padding:9px 14px;border:1px solid #e5e7eb;border-radius:7px;font-size:.9rem;font-family:inherit;outline:none;resize:vertical;"></textarea>
+      </div>
+      <div style="display:flex;gap:10px;">
+        <button class="btn btn-primary" onclick="saveFAQ()"><i class="fas fa-save"></i> บันทึก</button>
+        <button class="btn" style="background:#f3f4f6;color:#374151;" onclick="resetFAQForm()"><i class="fas fa-times"></i> ยกเลิก</button>
+      </div>
+      <div id="faq-msg" style="margin-top:10px;font-size:.85rem;"></div>
+    </div>
+
+    <!-- List -->
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+        <div class="card-title" style="margin:0"><i class="fas fa-list"></i> รายการ FAQ ทั้งหมด (<span id="faq-total">0</span> รายการ)</div>
+      </div>
+      <div class="search-bar">
+        <input type="text" id="faq-search" placeholder="ค้นหาคำถาม/คำตอบ..." oninput="searchFAQ()">
+      </div>
+      <table>
+        <thead>
+          <tr><th>#</th><th>คำถาม</th><th>คำตอบ (ย่อ)</th><th style="width:120px">จัดการ</th></tr>
+        </thead>
+        <tbody id="faq-table"></tbody>
+      </table>
+      <div class="pagination" id="faq-pagination"></div>
+    </div>
+  </div>
+
   <!-- Scraper Page -->
   <div class="page" id="page-scraper">
     <div class="card" style="margin-bottom:16px;">
@@ -264,18 +306,20 @@ const pageTitles = {
   overview: '<i class="fas fa-chart-pie"></i> ภาพรวมระบบ',
   chatlogs: '<i class="fas fa-comments"></i> ประวัติการสนทนา',
   users:    '<i class="fas fa-users"></i> ผู้ใช้งาน LINE',
+  faq:      '<i class="fas fa-question-circle"></i> จัดการ FAQ',
   scraper:  '<i class="fas fa-sync-alt"></i> จัดการ Scraper',
 };
 function showPage(name) {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   document.getElementById('page-' + name).classList.add('active');
-  const navOrder = ['overview','chatlogs','users','scraper'];
+  const navOrder = ['overview','chatlogs','users','faq','scraper'];
   document.querySelectorAll('.nav-item')[navOrder.indexOf(name)].classList.add('active');
   document.getElementById('page-title').innerHTML = pageTitles[name];
   if (name === 'chatlogs' && allLogs.length === 0) loadLogs(1);
   if (name === 'scraper') loadScraperStatus();
   if (name === 'users') loadUsers(1);
+  if (name === 'faq') loadFAQ(1);
 }
 
 // ── Load Overview Stats ─────────────────
@@ -475,6 +519,97 @@ function renderUserPagination(pages, current) {
     html += `<button class="page-btn ${i===current?'active':''}" onclick="loadUsers(${i})">${i}</button>`;
   }
   el.innerHTML = html;
+}
+
+// ── FAQ ──────────────────────────────────
+let faqPage = 1, faqSearchKw = '';
+
+async function loadFAQ(page = 1) {
+  faqPage = page;
+  const qs = faqSearchKw ? `&q=${encodeURIComponent(faqSearchKw)}` : '';
+  const r = await fetch(`/api/admin/faq?page=${page}${qs}`);
+  const d = await r.json();
+  document.getElementById('faq-total').textContent = d.total;
+  const tbody = document.getElementById('faq-table');
+  if (!d.items.length) {
+    tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#9ca3af;padding:20px;">ยังไม่มีข้อมูล FAQ</td></tr>';
+  } else {
+    tbody.innerHTML = d.items.map((f, i) => `
+      <tr>
+        <td style="color:#9ca3af">${(page-1)*20+i+1}</td>
+        <td style="font-weight:500">${escHtml(f.question.length>80 ? f.question.slice(0,80)+'...' : f.question)}</td>
+        <td style="color:#6b7280">${escHtml(f.answer.length>100 ? f.answer.slice(0,100)+'...' : f.answer)}</td>
+        <td>
+          <button class="btn" style="padding:5px 10px;background:#dbeafe;color:#2563eb;font-size:.78rem;margin-right:4px" onclick="editFAQ(${f.id}, ${JSON.stringify(f.question)}, ${JSON.stringify(f.answer)})">
+            <i class="fas fa-edit"></i> แก้ไข
+          </button>
+          <button class="btn btn-danger" style="padding:5px 10px;font-size:.78rem;" onclick="deleteFAQ(${f.id})">
+            <i class="fas fa-trash"></i>
+          </button>
+        </td>
+      </tr>
+    `).join('');
+  }
+  const pgEl = document.getElementById('faq-pagination');
+  pgEl.innerHTML = '';
+  for (let i = 1; i <= d.pages; i++) {
+    pgEl.innerHTML += `<button class="page-btn ${i===page?'active':''}" onclick="loadFAQ(${i})">${i}</button>`;
+  }
+}
+
+function searchFAQ() {
+  faqSearchKw = document.getElementById('faq-search').value;
+  loadFAQ(1);
+}
+
+function escHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function editFAQ(id, q, a) {
+  document.getElementById('faq-edit-id').value = id;
+  document.getElementById('faq-q').value = q;
+  document.getElementById('faq-a').value = a;
+  document.getElementById('faq-form-title').textContent = 'แก้ไข FAQ #' + id;
+  document.getElementById('faq-q').focus();
+  window.scrollTo({top: 0, behavior: 'smooth'});
+}
+
+function resetFAQForm() {
+  document.getElementById('faq-edit-id').value = '';
+  document.getElementById('faq-q').value = '';
+  document.getElementById('faq-a').value = '';
+  document.getElementById('faq-form-title').textContent = 'เพิ่ม FAQ ใหม่';
+  document.getElementById('faq-msg').textContent = '';
+}
+
+async function saveFAQ() {
+  const id = document.getElementById('faq-edit-id').value;
+  const q  = document.getElementById('faq-q').value.trim();
+  const a  = document.getElementById('faq-a').value.trim();
+  const msgEl = document.getElementById('faq-msg');
+  if (!q || !a) { msgEl.style.color='#dc2626'; msgEl.textContent='กรุณาใส่ทั้งคำถามและคำตอบ'; return; }
+  const url    = id ? `/api/admin/faq/${id}` : '/api/admin/faq';
+  const method = id ? 'PUT' : 'POST';
+  const r = await fetch(url, { method, headers: {'Content-Type':'application/json'}, body: JSON.stringify({question:q, answer:a}) });
+  if (r.ok) {
+    msgEl.style.color='#16a34a';
+    msgEl.textContent = id ? 'แก้ไขสำเร็จ' : 'เพิ่มสำเร็จ';
+    resetFAQForm();
+    loadFAQ(faqPage);
+    setTimeout(() => msgEl.textContent='', 3000);
+  } else {
+    const e = await r.json();
+    msgEl.style.color='#dc2626';
+    msgEl.textContent = e.error || 'เกิดข้อผิดพลาด';
+  }
+}
+
+async function deleteFAQ(id) {
+  if (!confirm('ยืนยันลบ FAQ นี้?')) return;
+  const r = await fetch(`/api/admin/faq/${id}`, { method: 'DELETE' });
+  if (r.ok) { loadFAQ(faqPage); }
+  else alert('ลบไม่สำเร็จ');
 }
 
 // ── Init ────────────────────────────────

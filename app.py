@@ -124,6 +124,14 @@ class LineUser(db.Model):
     last_login    = db.Column(db.DateTime, default=datetime.utcnow)
     login_count   = db.Column(db.Integer, default=1)
 
+class FAQ(db.Model):
+    __tablename__ = "faq"
+    id         = db.Column(db.Integer, primary_key=True)
+    question   = db.Column(db.Text, nullable=False)
+    answer     = db.Column(db.Text, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
 # ──────────────────────────────────────────
 # In-memory context
 # ──────────────────────────────────────────
@@ -132,22 +140,37 @@ FAQ_CONTEXT = []
 
 _FAQ_EXCEL_PATH = os.path.join(os.path.dirname(__file__), "FAQ_AI_updated.xlsx")
 
-def load_faq_from_excel():
-    global FAQ_CONTEXT
+def migrate_faq_from_excel():
+    """โหลด FAQ จาก Excel เข้า DB ครั้งแรก (ถ้า DB ว่าง)"""
     try:
+        if FAQ.query.count() > 0:
+            return
         import openpyxl
         wb = openpyxl.load_workbook(_FAQ_EXCEL_PATH)
         ws = wb.active
-        entries = []
+        count = 0
         for row in ws.iter_rows(min_row=2, values_only=True):
             q = str(row[1]).strip() if row[1] else ""
             a = str(row[2]).strip() if row[2] else ""
             if q and a:
-                entries.append({"q": q, "a": a})
-        FAQ_CONTEXT = entries
-        print(f"[FAQ] Loaded {len(FAQ_CONTEXT)} entries from Excel")
+                db.session.add(FAQ(question=q, answer=a))
+                count += 1
+        db.session.commit()
+        print(f"[FAQ] Migrated {count} entries from Excel to DB")
     except Exception as e:
-        print(f"[FAQ] Failed to load Excel: {e}")
+        print(f"[FAQ] Migration failed: {e}")
+
+def load_faq_from_db():
+    global FAQ_CONTEXT
+    try:
+        entries = [{"q": f.question, "a": f.answer} for f in FAQ.query.all()]
+        FAQ_CONTEXT = entries
+        print(f"[FAQ] Loaded {len(FAQ_CONTEXT)} entries from DB")
+    except Exception as e:
+        print(f"[FAQ] Failed to load from DB: {e}")
+
+def load_faq_from_excel():
+    load_faq_from_db()
 
 def load_context_from_db():
     global CHAT_CONTEXT
@@ -731,6 +754,62 @@ def export_chatlogs():
         mimetype="text/csv",
         headers={"Content-Disposition": "attachment; filename=chat_logs.csv"}
     )
+@app.route("/api/admin/faq", methods=["GET"])
+@admin_required
+def api_faq_list():
+    page     = request.args.get("page", 1, type=int)
+    per_page = 20
+    search   = request.args.get("q", "").strip()
+    query    = FAQ.query
+    if search:
+        query = query.filter(FAQ.question.ilike(f"%{search}%") | FAQ.answer.ilike(f"%{search}%"))
+    paginated = query.order_by(FAQ.id.desc()).paginate(page=page, per_page=per_page, error_out=False)
+    return jsonify({
+        "items": [{"id": f.id, "question": f.question, "answer": f.answer} for f in paginated.items],
+        "total": paginated.total,
+        "pages": paginated.pages,
+        "current": page,
+    })
+
+@app.route("/api/admin/faq", methods=["POST"])
+@admin_required
+def api_faq_create():
+    data = request.get_json(silent=True) or {}
+    q = (data.get("question") or "").strip()
+    a = (data.get("answer") or "").strip()
+    if not q or not a:
+        return jsonify({"error": "กรุณาใส่คำถามและคำตอบ"}), 400
+    faq = FAQ(question=q, answer=a)
+    db.session.add(faq)
+    db.session.commit()
+    load_faq_from_db()
+    return jsonify({"id": faq.id, "question": faq.question, "answer": faq.answer}), 201
+
+@app.route("/api/admin/faq/<int:faq_id>", methods=["PUT"])
+@admin_required
+def api_faq_update(faq_id):
+    faq = FAQ.query.get_or_404(faq_id)
+    data = request.get_json(silent=True) or {}
+    q = (data.get("question") or "").strip()
+    a = (data.get("answer") or "").strip()
+    if not q or not a:
+        return jsonify({"error": "กรุณาใส่คำถามและคำตอบ"}), 400
+    faq.question = q
+    faq.answer   = a
+    faq.updated_at = datetime.utcnow()
+    db.session.commit()
+    load_faq_from_db()
+    return jsonify({"id": faq.id, "question": faq.question, "answer": faq.answer})
+
+@app.route("/api/admin/faq/<int:faq_id>", methods=["DELETE"])
+@admin_required
+def api_faq_delete(faq_id):
+    faq = FAQ.query.get_or_404(faq_id)
+    db.session.delete(faq)
+    db.session.commit()
+    load_faq_from_db()
+    return jsonify({"ok": True})
+
 @app.route("/api/admin/users")
 @admin_required
 def api_admin_users():
@@ -837,7 +916,8 @@ def initialize_app():
         # โหลด PDF หลักสูตรเข้า context
         load_curriculum_pdfs()
 
-        # โหลด FAQ จาก Excel
+        # migrate FAQ จาก Excel → DB (ครั้งแรกเท่านั้น) แล้วโหลดจาก DB
+        migrate_faq_from_excel()
         load_faq_from_excel()
     start_scheduler()
 
