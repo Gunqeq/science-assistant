@@ -10,6 +10,7 @@ import os
 import re
 import json
 import secrets
+import hmac
 import requests
 import traceback
 from bs4 import BeautifulSoup
@@ -46,12 +47,12 @@ app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
     "pool_pre_ping": True,
     "pool_recycle": 300,
 }
-app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "sciKU-secret-2024")
+app.config["SECRET_KEY"] = os.getenv("SECRET_KEY") or secrets.token_hex(32)
 db = SQLAlchemy(app)
 
-# Admin credentials
-ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "sci1234")
+# Admin credentials (ตั้งผ่าน env เท่านั้น — ไม่มี default เพื่อกันรหัสหลุดใน repo สาธารณะ)
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
 
 # Gemini
 GEMINI_API_KEY  = os.getenv("GEMINI_API_KEY")
@@ -622,14 +623,40 @@ def admin_login():
         return redirect(url_for("dashboard"))
     return render_template("admin_login.html")
 
+# ── Rate-limit หน้า login (in-memory; Render ใช้ worker เดียว จึงเพียงพอ) ──
+_login_attempts  = {}     # ip -> [timestamps ของครั้งที่ล้มเหลว]
+_LOGIN_MAX_TRIES = 5
+_LOGIN_WINDOW    = 300    # 5 นาที
+
+def _client_ip():
+    fwd = request.headers.get("X-Forwarded-For", "")
+    return fwd.split(",")[0].strip() if fwd else (request.remote_addr or "unknown")
+
+def _login_blocked(ip):
+    now   = time.time()
+    tries = [t for t in _login_attempts.get(ip, []) if now - t < _LOGIN_WINDOW]
+    _login_attempts[ip] = tries
+    return len(tries) >= _LOGIN_MAX_TRIES
+
 @app.route("/admin/login", methods=["POST"])
 def admin_auth():
+    ip = _client_ip()
+    if _login_blocked(ip):
+        return render_template("admin_login.html",
+            error="พยายามเข้าสู่ระบบบ่อยเกินไป กรุณารอสักครู่แล้วลองใหม่"), 429
+    if not ADMIN_USERNAME or not ADMIN_PASSWORD:
+        return render_template("admin_login.html",
+            error="ระบบยังไม่ได้ตั้งค่าผู้ดูแล (ตั้ง ADMIN_USERNAME/ADMIN_PASSWORD ใน environment)"), 500
     username = request.form.get("username", "")
     password = request.form.get("password", "")
-    if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
+    ok = (hmac.compare_digest(username.encode("utf-8"), ADMIN_USERNAME.encode("utf-8"))
+          and hmac.compare_digest(password.encode("utf-8"), ADMIN_PASSWORD.encode("utf-8")))
+    if ok:
+        _login_attempts.pop(ip, None)   # ล้างประวัติเมื่อล็อกอินสำเร็จ
         flask_session["admin_logged_in"] = True
         flask_session.permanent = False
         return redirect(url_for("dashboard"))
+    _login_attempts.setdefault(ip, []).append(time.time())
     return render_template("admin_login.html", error="ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง")
 
 @app.route("/admin/logout")
