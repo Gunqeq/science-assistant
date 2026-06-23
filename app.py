@@ -198,7 +198,9 @@ def run_scrape(trigger="auto"):
         print(f"[Scraper] Starting ({trigger})...")
         data = get_kusrc_data()
         with app.app_context():
+            current_urls = set()
             for item in data:
+                current_urls.add(item["source"])
                 existing = ScrapedPage.query.filter_by(url=item["source"]).first()
                 if existing:
                     existing.content = item["content"]
@@ -207,13 +209,24 @@ def run_scrape(trigger="auto"):
                 else:
                     db.session.add(ScrapedPage(url=item["source"], category=item["category"], content=item["content"]))
             db.session.commit()
+            # ลบหน้าเก่า/ตาย ที่ไม่เจอในรอบล่าสุด — มี guard กันเคส scrape ล่มแล้วลบ DB เกลี้ยง
+            removed = 0
+            if len(data) >= 30:
+                stale = ScrapedPage.query.filter(~ScrapedPage.url.in_(current_urls)).all()
+                removed = len(stale)
+                for sp in stale:
+                    db.session.delete(sp)
+                db.session.commit()
+                print(f"[Scraper] Pruned {removed} stale pages.")
+            else:
+                print(f"[Scraper] Skip prune ({len(data)} pages < 30 — อาจ scrape ไม่ครบ)")
             log = db.session.get(ScrapeLog, log_id)
             log.pages = len(data)
             log.finished_at = datetime.utcnow()
             log.status = "done"
             db.session.commit()
         load_context_from_db()
-        print(f"[Scraper] Done — {len(data)} pages saved.")
+        print(f"[Scraper] Done — {len(data)} pages saved, {removed} pruned.")
     except Exception as e:
         with app.app_context():
             log = ScrapeLog.query.get(log_id)
@@ -312,10 +325,17 @@ def ask_gemini(user_message, history=None):
     context_str = ""
     if CHAT_CONTEXT:
         filtered = [d for d in CHAT_CONTEXT if _matches(d["content"]) or _matches(d.get("category", ""))]
+        # ปฏิทินการศึกษา: ถ้าคำถามเกี่ยวกับวัน/สอบ/ลงทะเบียน ให้ดันปฏิทินขึ้นหน้าสุดเสมอ
+        _cal_kw = ("สอบ", "ปฏิทิน", "เปิดเทอม", "ปิดเทอม", "เปิดภาค", "ปิดภาค",
+                   "ลงทะเบียน", "ถอน", "เพิ่มวิชา", "กำหนดการ", "เทอม", "ภาคเรียน", "วันสุดท้าย")
+        if any(k in msg_lower for k in _cal_kw):
+            cal_docs = [d for d in CHAT_CONTEXT if "ปฏิทิน" in d.get("category", "")]
+            filtered = cal_docs + [d for d in filtered if d not in cal_docs]
         docs_to_use = filtered[:8] if filtered else CHAT_CONTEXT[:5]
         context_str = "\n\nRelevant Information:\n"
         for doc in docs_to_use:
-            context_str += f"Source: {doc['source']} ({doc['category']})\nContent: {doc['content'][:2000]}\n\n"
+            limit = 8000 if "ปฏิทิน" in doc.get("category", "") else 2000
+            context_str += f"Source: {doc['source']} ({doc['category']})\nContent: {doc['content'][:limit]}\n\n"
 
     # เพิ่ม FAQ จาก Excel ที่เกี่ยวข้อง
     faq_str = ""
