@@ -56,7 +56,7 @@ Runs automated tests against the FAQ set, scoring answer accuracy and appropriat
 
 | 💬 User — Chat | 🛠 Admin — Dashboard |
 |:---:|:---:|
-| <img width="450" alt="User chat interface" src="https://github.com/user-attachments/assets/7be5f293-d689-4b51-86ab-4444bfbdfc62" /> | <img width="450" alt="Admin dashboard" src="https://github.com/user-attachments/assets/1111ad49-4738-4f5d-bdfa-7b1abe5056f6" /> |
+| <img width="450" alt="User chat interface" src="https://github.com/user-attachments/assets/7be5f293-d689-4b51-86ab-4444bfbdfc62" /> | <img width="700" height="300" alt="Admin dashboard" src="https://github.com/user-attachments/assets/1111ad49-4738-4f5d-bdfa-7b1abe5056f6" /> |
 
 
 ## 👤 Author
