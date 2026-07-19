@@ -54,7 +54,10 @@ Runs automated tests against the FAQ set, scoring answer accuracy and appropriat
 
 ## 📸 Screenshots
 
-<img width="1112" height="609" alt="image" src="https://github.com/user-attachments/assets/daeb6cc4-1805-4de7-9764-17b617b1d7ee" />
+<img width="1409" height="606" alt="image" src="https://github.com/user-attachments/assets/7be5f293-d689-4b51-86ab-4444bfbdfc62" />
+<img width="1003" height="518" alt="image" src="https://github.com/user-attachments/assets/1111ad49-4738-4f5d-bdfa-7b1abe5056f6" />
+
+
 
 ## 👤 Author
 
