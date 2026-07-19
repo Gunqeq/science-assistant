@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # API Keys
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', 'AIzaSyCq0BHHCOcc6bcwUVp3CCUGRFWbdgyp2LA')
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
 
 # Security
 SECRET_KEY = os.getenv('SECRET_KEY', os.urandom(24).hex())
