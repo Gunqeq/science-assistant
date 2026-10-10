@@ -2,7 +2,7 @@
 
 AI-powered chatbot for the **Faculty of Science, Kasetsart University Sriracha Campus** — automating student inquiries about curricula, registration procedures, and official documents, powered by Google Gemini.
 
-🔗 **Live demo:** _(ใส่ URL จาก Render ตรงนี้)_
+🔗 **Live demo:** [_(ใส่ URL จาก Render ตรงนี้)_](https://kusrc-science-assistant.onrender.com/)
 
 ## ✨ Features
 
