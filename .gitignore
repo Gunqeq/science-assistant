@@ -1,11 +1,10 @@
 # Environment variables (ห้าม push ขึ้น GitHub เด็ดขาด)
 .env
-echo "venv/
+
+# Virtual environments
 venv/
-__pycache__/
-*.pyc
-.env
-*.db" > .gitignore
+.venv/
+
 # Python cache
 __pycache__/
 *.pyc
@@ -28,7 +27,10 @@ eval_results.json
 # OS
 .DS_Store
 Thumbs.db
-echo venv
+
+# SQLite WAL files
+*.db-wal
+*.db-shm
 
 # Document & Reports
 Document/
