@@ -1094,6 +1094,34 @@ def evaluate_faithfulness(bot_text, context_text):
         "unsupported_facts": unsupported_facts
     }
 
+# คำแสลง/คำพูดของนิสิต → คำทางการที่ปรากฏในเอกสาร
+# ใช้ขยายคำค้นก่อนสืบค้น (prompt.py สอน AI ให้ตีความแล้ว แต่ขั้นค้นเอกสารต้องรู้ด้วย ไม่งั้นหาเอกสารไม่เจอ)
+# key ต้องเป็นตัวพิมพ์เล็ก และควรเลี่ยงคำสั้นที่ไปซ้อนกับคำอื่น (เช่น "แอด" ซ้อนกับ "แอดมิชชั่น")
+_SLANG_MAP = {
+    "ติดโปร":   ("สภาพวิทยาทัณฑ์", "วิทยาทัณฑ์", "เกรดเฉลี่ยสะสม", "gpax"),
+    "โปรต่ำ":   ("สภาพวิทยาทัณฑ์", "วิทยาทัณฑ์", "เกรดเฉลี่ยสะสม", "gpax"),
+    "โปรสูง":   ("สภาพวิทยาทัณฑ์", "วิทยาทัณฑ์", "เกรดเฉลี่ยสะสม", "gpax"),
+    "รีไทร์":   ("พ้นสภาพนิสิต", "พ้นสภาพ"),
+    "รีไทน์":   ("พ้นสภาพนิสิต", "พ้นสภาพ"),
+    "ดรอป":    ("ถอนรายวิชา",),
+    "ติดw":    ("ถอนรายวิชา",),
+    "ติด w":   ("ถอนรายวิชา",),
+    "เซคเต็ม":  ("หมู่เรียนเต็ม", "หมู่เรียน"),
+    "เซคชั่น":  ("หมู่เรียน",),
+    "เกรดรวม":  ("เกรดเฉลี่ยสะสม", "gpax"),
+    "ซัมเมอร์":  ("ภาคฤดูร้อน",),
+    "หอใน":    ("หอพักนิสิต", "หอพัก"),
+    "กยศ":     ("กองทุนเงินให้กู้ยืมเพื่อการศึกษา", "กู้ยืม"),
+}
+
+def _expand_slang(text):
+    """คืนรายการคำทางการที่ตรงกับคำแสลงใน text (ไม่ซ้ำ ตามลำดับ)"""
+    terms = []
+    for slang, formal in _SLANG_MAP.items():
+        if slang in text:
+            terms.extend(formal)
+    return list(dict.fromkeys(terms))
+
 def _perform_retrieval(user_message, history=None):
     """ดำเนินการสืบค้นข้อมูลในคลังเอกสารและ FAQ (Core RAG Retrieval)"""
     msg_lower = user_message.lower()
@@ -1130,6 +1158,9 @@ def _perform_retrieval(user_message, history=None):
     kw = [w for w in search_src.split() if len(w) > 1]
     compact = search_src.replace(" ", "")
     kw += [compact[i:i+3] for i in range(len(compact) - 2)]
+    # เพิ่มคำทางการเป็นคำเต็ม (ไม่แตกเป็น 3 ตัวอักษร เพื่อไม่ให้ไปจับคำทั่วไปอย่าง "วิทยา")
+    slang_terms = _expand_slang(msg_lower)
+    kw += slang_terms
     if prev_user_text:
         cleaned_prev = prev_user_text
         for sw in _stop_words:
@@ -1138,21 +1169,27 @@ def _perform_retrieval(user_message, history=None):
         prev_kw = [w for w in cleaned_prev.split() if len(w) > 1]
         compact_prev = cleaned_prev.replace(" ", "")
         prev_kw += [compact_prev[i:i+3] for i in range(len(compact_prev) - 2)]
+        prev_slang = _expand_slang(prev_user_text)
+        prev_kw += prev_slang
 
         _topic_kws = ("วิชา", "หลักสูตร", "ค่าเทอม", "ทุน", "ปฏิทิน", "สอบ", "ลงทะเบียน", "คำร้อง", "เอกสาร", "หอพัก", "เกรด", "ปี", "เทอม")
         is_follow_up = len(cleaned_msg) < 30 or not any(k in cleaned_msg for k in _topic_kws) or any(k in msg_lower for k in ("บอกผม", "บอกได้", "สาขา", "ภาค", "แล้ว", "ต่อ", "เพิ่มเติม"))
         if is_follow_up and prev_kw:
             kw = list(dict.fromkeys(kw + prev_kw))
+            slang_terms = list(dict.fromkeys(slang_terms + prev_slang))
         else:
             kw = list(dict.fromkeys(kw))
     else:
         kw = list(dict.fromkeys(kw))
 
+    _slang_set = set(slang_terms)
+
     def _score(text):
         if not kw or not text:
             return 0
         t = text.lower()
-        return sum(1 for w in kw if w in t)
+        # คำทางการจากคำแสลงแม่นยำกว่า trigram ทั่วไป จึงให้น้ำหนัก 3 เท่า
+        return sum((3 if w in _slang_set else 1) for w in kw if w in t)
 
     _MAJOR_MAP = {
         "cs": {
@@ -1252,7 +1289,7 @@ def _perform_retrieval(user_message, history=None):
             filtered = top_tuition_docs + [d for d in filtered if d not in top_tuition_docs]
 
         # ป้องกันไม่ให้คำว่า "สอบถาม", "ทดสอบ", "ตรวจสอบ" ไปทริกเกอร์หมวดปฏิทินสอบ
-        cal_clean_text = re.sub(r'สอบถาม|ทดสอบ|ตรวจสอบ', ' ', msg_lower)
+        cal_clean_text = re.sub(r'สอบถาม|ทดสอบ|ตรวจสอบ', ' ', msg_lower) + " " + " ".join(slang_terms)
         _cal_kw = ("วันสอบ", "ตารางสอบ", "ห้องสอบ", "สอบกลางภาค", "สอบปลายภาค", "สอบไล่", "ขอสอบ",
                    "ปฏิทิน", "เปิดเทอม", "ปิดเทอม", "เปิดภาค", "ปิดภาค",
                    "ลงทะเบียน", "ถอน", "เพิ่มวิชา", "กำหนดการ", "เทอม", "ภาคเรียน", "วันสุดท้าย")
@@ -1279,7 +1316,7 @@ def _perform_retrieval(user_message, history=None):
     is_faq_enabled = (get_setting("faq_enabled", "true") == "true")
     if is_faq_enabled and FAQ_CONTEXT and FAQ_TOKEN_DATA:
         N = len(FAQ_CONTEXT)
-        q_ngrams = get_faq_ngrams(search_src)
+        q_ngrams = get_faq_ngrams(" ".join([search_src] + slang_terms))
         if q_ngrams:
             query_weights = {g: FAQ_IDF.get(g, math.log(N + 1)) for g in q_ngrams}
             weights_sorted = sorted(query_weights.values())
