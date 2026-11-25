@@ -1122,6 +1122,25 @@ def _expand_slang(text):
             terms.extend(formal)
     return list(dict.fromkeys(terms))
 
+_PLAN_YEAR_RE = re.compile(r"ปี\s*(?:ที่|ที)?\s*([1-4])(?!\d)")
+_PLAN_TERM_RE = re.compile(r"(?:เทอม|ภาค\s*(?:เรียน|การศึกษา)?\s*(?:ที่|ที)?)\s*([12])(?!\d)")
+_PLAN_STUDY_WORDS = ("วิชา", "เรียน", "แผน", "หน่วยกิต", "ลงทะเบียน", "เทอม", "ภาค")
+
+def _build_plan_header_re(msg_lower):
+    """ถ้าเป็นคำถามแผนการเรียนรายชั้นปี/เทอม คืน regex ที่จับหัวข้อ 'ปีที่ X ภาคการศึกษาที่ Y'
+    ในไฟล์หลักสูตร (ข้อความจาก PDF มักวรรณยุกต์หาย เช่น 'ปีที 2 ภาคการศกษาท 2' จึงจับแบบหลวมๆ)
+    ไม่ใช่คำถามแผนการเรียน คืน None"""
+    compact = msg_lower.replace(" ", "")
+    m_year = _PLAN_YEAR_RE.search(compact)
+    if not m_year or not any(w in compact for w in _PLAN_STUDY_WORDS):
+        return None
+    year = m_year.group(1)
+    m_term = _PLAN_TERM_RE.search(compact)
+    term = m_term.group(1) if m_term else ("1" if "ภาคต้น" in compact else "2" if "ภาคปลาย" in compact else None)
+    if term:
+        return re.compile(rf"ป\S{{0,4}}\s*{year}\s*ภาค\S{{0,14}}?\s*{term}(?!\d)")
+    return re.compile(rf"ป\S{{0,4}}\s*{year}\s*ภาค")
+
 def _perform_retrieval(user_message, history=None):
     """ดำเนินการสืบค้นข้อมูลในคลังเอกสารและ FAQ (Core RAG Retrieval)"""
     msg_lower = user_message.lower()
@@ -1252,6 +1271,16 @@ def _perform_retrieval(user_message, history=None):
         "สาขาทั้งหมด", "หลักสูตรทั้งหมด", "เรียนสาขาไหนดี", "แนะนำสาขา", "มีสาขา"
     ))
 
+    # คำถามแผนการเรียนรายชั้นปี/เทอม เช่น "วิชาเลือกปี2เทอม2", "ปี 3 ภาคปลายเรียนอะไร"
+    plan_header_re = _build_plan_header_re(msg_lower)
+    is_plan_q = plan_header_re is not None
+    # ผู้ใช้ตอบสาขากลับมาหลังบอทถาม (เช่น "วิทย์คอม") → ใช้ปี/เทอมจากข้อความก่อนหน้า
+    if not plan_header_re and prev_user_text and len(cleaned_msg) < 30:
+        mentions_major = any(any(k in msg_lower for k in m["keywords"]) for m in _MAJOR_MAP.values())
+        if mentions_major:
+            plan_header_re = _build_plan_header_re(prev_user_text)
+            is_plan_q = plan_header_re is not None
+
     if CHAT_CONTEXT:
         for idx, d in enumerate(CHAT_CONTEXT):
             src_lower = d.get("source", "").lower()
@@ -1259,6 +1288,12 @@ def _perform_retrieval(user_message, history=None):
             cat_lower = d.get("category", "").lower()
 
             sc = _score(content_lower) + _score(cat_lower) * 3 + _score(src_lower) * 3
+            # ดันชิ้นเอกสารที่มีหัวข้อแผนการศึกษาของปี/เทอมที่ถามขึ้นมาก่อน
+            # (ถ้าระบุสาขา ดันเฉพาะไฟล์ของสาขานั้น ไม่ให้แผนของสาขาอื่นมาแย่งที่)
+            if plan_header_re and plan_header_re.search(content_lower):
+                if not detected_majors or any(
+                        any(f in src_lower for f in _MAJOR_MAP[m]["files"]) for m in detected_majors):
+                    sc += 40
             if detected_majors:
                 for m_key in detected_majors:
                     target_files = _MAJOR_MAP[m_key]["files"]
@@ -1294,6 +1329,9 @@ def _perform_retrieval(user_message, history=None):
                    "ปฏิทิน", "เปิดเทอม", "ปิดเทอม", "เปิดภาค", "ปิดภาค",
                    "ลงทะเบียน", "ถอน", "เพิ่มวิชา", "กำหนดการ", "เทอม", "ภาคเรียน", "วันสุดท้าย")
         has_cal_match = any(k in cal_clean_text for k in _cal_kw) or bool(re.search(r'(?<![ก-๙])สอบ(?![ก-๙])', cal_clean_text))
+        # คำถามแผนการเรียนมีคำว่า "เทอม" แต่ไม่ได้ถามปฏิทิน จึงไม่ดันเอกสารปฏิทินขึ้นมาแย่งที่
+        if plan_header_re and not any(k in msg_lower for k in ("ปฏิทิน", "สอบ", "วันสุดท้าย", "กำหนดการ", "เปิดเทอม", "ปิดเทอม")):
+            has_cal_match = False
         if has_cal_match and "ค่าเทอม" not in msg_lower:
             cal_docs = [d for d in CHAT_CONTEXT if "ปฏิทิน" in d.get("category", "")]
             filtered = cal_docs + [d for d in filtered if d not in cal_docs]
@@ -1350,6 +1388,10 @@ def _perform_retrieval(user_message, history=None):
     return {
         "kw": kw,
         "detected_majors": detected_majors,
+        "is_plan_q": is_plan_q,
+        "plan_sources": list(dict.fromkeys(
+            d.get("source", "") for d in docs_to_use
+            if plan_header_re and plan_header_re.search(d.get("content", "").lower()))),
         "docs_to_use": docs_to_use,
         "doc_score_map": doc_score_map,
         "scored_faq": scored_faq,
@@ -1702,8 +1744,21 @@ def ask_gemini(user_message, history=None, return_debug=False):
     faq_str = ret["faq_str"]
     is_all_programs_q = ret.get("is_all_programs_q", False)
 
+    # คำถามแผนการเรียนรายปี/เทอม (กฎข้อ 10)
+    #   ยังไม่รู้สาขา → ถามสาขาก่อน | รู้สาขาและเจอตาราง → ตอบรายวิชาจากตารางทันที
+    plan_note = ""
+    if ret.get("is_plan_q"):
+        if not detected_majors:
+            plan_note = ("\n[หมายเหตุระบบ] คำถามนี้เป็นคำถามแผนการเรียนรายชั้นปี/เทอม แต่ผู้ใช้ยังไม่ได้ระบุสาขาวิชา "
+                         "ให้ถามสาขาวิชากลับก่อนตามกฎข้อ 10 ห้ามตอบรายวิชาของสาขาใดๆ ในรอบนี้\n")
+        elif ret.get("plan_sources"):
+            plan_note = ("\n[หมายเหตุระบบ] คำถามนี้เป็นคำถามแผนการเรียนรายชั้นปี/เทอม และ Context ด้านบนมีตารางแผนการศึกษา"
+                         f"ของปี/เทอมที่ถามจากไฟล์: {', '.join(ret['plan_sources'])} "
+                         "ให้ตอบรายวิชา (รหัส ชื่อวิชา หน่วยกิต) จากตารางนี้ทันทีตามกฎข้อ 10 "
+                         "ห้ามตอบแค่ให้ไปตรวจสอบเอง\n")
+
     system = f"""{prompt}
-{context_str}{faq_str}
+{context_str}{faq_str}{plan_note}
 ---
 รายชื่อไฟล์ PDF ที่มีในระบบ (ใช้ชื่อเหล่านี้เท่านั้น):
 {PDF_LIST_STR}
