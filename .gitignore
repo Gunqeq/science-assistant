@@ -1,17 +1,13 @@
 # Environment variables (ห้าม push ขึ้น GitHub เด็ดขาด)
 .env
-echo "venv/
-venv/
-__pycache__/
-*.pyc
-.env
-*.db" > .gitignore
+
 # Python cache
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 .Python
+venv/
 
 # Database (เก็บ local เท่านั้น)
 instance/
@@ -28,7 +24,6 @@ eval_results.json
 # OS
 .DS_Store
 Thumbs.db
-echo venv
 
 # Document & Reports
 Document/

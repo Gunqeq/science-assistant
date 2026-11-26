@@ -1,8 +1,12 @@
 from flask import Flask, render_template, request, jsonify, send_from_directory, redirect, url_for, session as flask_session, Response
 from flask_sqlalchemy import SQLAlchemy
 from functools import wraps
-from datetime import datetime, timedelta as _td
+from datetime import datetime, timezone, timedelta as _td
 from PyPDF2 import PdfReader
+
+def utc_now() -> datetime:
+    """ส่งคืน naive UTC datetime (ทดแทน datetime.utcnow() ที่ deprecated ใน Python 3.12+)"""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 from urllib.parse import urlencode, urlparse, unquote, urldefrag
 import threading
 import time
@@ -17,17 +21,31 @@ import math
 from collections import Counter
 from bs4 import BeautifulSoup
 
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from dotenv import load_dotenv
 
 load_dotenv()
 
+_GENAI_CLIENTS = {}
+_GENAI_CLIENT_LOCK = threading.Lock()
+
+def _get_genai_client(api_key: str):
+    """คืนค่า genai.Client แยกตามคีย์แบบ Thread-safe"""
+    client = _GENAI_CLIENTS.get(api_key)
+    if client is None:
+        with _GENAI_CLIENT_LOCK:
+            client = _GENAI_CLIENTS.get(api_key)
+            if client is None:
+                client = genai.Client(api_key=api_key)
+                _GENAI_CLIENTS[api_key] = client
+    return client
+
 try:
-    from scraper import get_kusrc_data, scrape_calendar, is_spider_trap
+    from scraper import get_kusrc_data, is_spider_trap
 except Exception as e:
     print("SCRAPER ERROR:", traceback.format_exc())
     get_kusrc_data = None
-    scrape_calendar = None
     is_spider_trap = None
 
 try:
@@ -59,7 +77,10 @@ app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
     "pool_size": 5,
     "max_overflow": 5,
 }
-app.config["SECRET_KEY"] = os.getenv("SECRET_KEY") or secrets.token_hex(32)
+_RAW_SECRET_KEY = os.getenv("SECRET_KEY")
+if not _RAW_SECRET_KEY and (os.getenv("RENDER") or os.getenv("DYNO") or os.getenv("FLASK_ENV") == "production"):
+    print("[SECURITY WARNING] ไม่ได้ตั้งค่า SECRET_KEY ใน Environment! เซสชันจะถูกรีเซ็ตทุกครั้งที่เซิร์ฟเวอร์รีสตาร์ท")
+app.config["SECRET_KEY"] = _RAW_SECRET_KEY or secrets.token_hex(32)
 app.config["PERMANENT_SESSION_LIFETIME"] = _td(minutes=30)  # Session หมดอายุหลังจากไม่ได้ใช้งาน 30 นาที
 app.config["TEMPLATES_AUTO_RELOAD"] = True
 
@@ -73,14 +94,58 @@ if os.getenv("RENDER") or os.getenv("DYNO"):
     from werkzeug.middleware.proxy_fix import ProxyFix
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 
+def _get_thai_date_str() -> str:
+    """ส่งคืนวันที่ไทยปัจจุบัน YYYY-MM-DD (UTC+7) สำหรับรีเซ็ตโควตา Guest รายวัน"""
+    return (utc_now() + _td(hours=7)).strftime("%Y-%m-%d")
+
+def _get_or_create_csrf_token() -> str:
+    """สร้างหรือคืนค่า CSRF Token ประจำ Session สำหรับฝั่ง Admin"""
+    token = flask_session.get("_csrf_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        flask_session["_csrf_token"] = token
+    return token
+
+@app.context_processor
+def _inject_csrf_token():
+    return {"csrf_token": _get_or_create_csrf_token, "thai_today_str": _get_thai_date_str()}
+
+@app.before_request
+def _verify_admin_csrf():
+    if request.method not in ("POST", "PUT", "DELETE", "PATCH"):
+        return None
+    path = request.path or ""
+    if path == "/admin/login":
+        expected = flask_session.get("_csrf_token") or ""
+        provided = request.form.get("csrf_token") or request.headers.get("X-CSRF-Token") or ""
+        if not expected or not provided or not hmac.compare_digest(expected, provided):
+            return render_template(
+                "admin_login.html",
+                error="คำขอไม่ถูกต้องหรือหน้าหมดอายุ กรุณารีเฟรชหน้าแล้วลองใหม่"
+            ), 403
+        return None
+    if (path.startswith("/api/admin/") or path == "/admin/scrape") and flask_session.get("admin_logged_in"):
+        expected = flask_session.get("_csrf_token") or ""
+        provided = (
+            request.headers.get("X-CSRF-Token")
+            or request.form.get("csrf_token")
+            or ""
+        )
+        if not expected or not provided or not hmac.compare_digest(expected, provided):
+            return jsonify({"error": "CSRF token ไม่ถูกต้องหรือหมดอายุ กรุณารีเฟรชหน้า Dashboard"}), 403
+    return None
+
 # Admin credentials (ตั้งผ่าน env เท่านั้น — ไม่มี default เพื่อกันรหัสหลุดใน repo สาธารณะ)
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD")
 
-# Gemini
+# Gemini API Keys & Smart Cooldown Manager
 GEMINI_API_KEY  = os.getenv("GEMINI_API_KEY")
 GEMINI_API_KEY2 = os.getenv("GEMINI_API_KEY2")
 GEMINI_API_KEY3 = os.getenv("GEMINI_API_KEY3")
+
+# เก็บเวลา cooldown ของแต่ละ API Key เมื่อติด 429 RateLimit/Quota (key: float_timestamp_until)
+_KEY_COOLDOWNS = {}
 
 # LINE Login
 LINE_CLIENT_ID     = os.getenv("LINE_CLIENT_ID") or os.getenv("LINE_CHANNEL_ID")
@@ -132,12 +197,12 @@ class ScrapedPage(db.Model):
     url          = db.Column(db.String(500), unique=True, nullable=False)
     category     = db.Column(db.String(100))
     content      = db.Column(db.Text, nullable=False)
-    last_scraped = db.Column(db.DateTime, default=datetime.utcnow)
+    last_scraped = db.Column(db.DateTime, default=utc_now)
 
 class ScrapeLog(db.Model):
     __tablename__ = "scrape_logs"
     id          = db.Column(db.Integer, primary_key=True)
-    started_at  = db.Column(db.DateTime, default=datetime.utcnow)
+    started_at  = db.Column(db.DateTime, default=utc_now)
     finished_at = db.Column(db.DateTime, nullable=True)
     pages       = db.Column(db.Integer, default=0)
     status      = db.Column(db.String(50), default="running")
@@ -149,7 +214,7 @@ class ChatLog(db.Model):
     user_id      = db.Column(db.Integer, nullable=True)
     user_message = db.Column(db.Text, nullable=False)
     bot_answer   = db.Column(db.Text, nullable=False)
-    timestamp    = db.Column(db.DateTime, default=datetime.utcnow, index=True)
+    timestamp    = db.Column(db.DateTime, default=utc_now, index=True)
     session_id   = db.Column(db.String(100), nullable=True)
     feedback     = db.Column(db.Integer, nullable=True)
     is_guest     = db.Column(db.Boolean, default=False, index=True)
@@ -161,8 +226,8 @@ class LineUser(db.Model):
     line_user_id  = db.Column(db.String(100), unique=True, nullable=False)
     display_name  = db.Column(db.String(100))
     picture_url   = db.Column(db.String(300))
-    first_login   = db.Column(db.DateTime, default=datetime.utcnow)
-    last_login    = db.Column(db.DateTime, default=datetime.utcnow)
+    first_login   = db.Column(db.DateTime, default=utc_now)
+    last_login    = db.Column(db.DateTime, default=utc_now)
     login_count   = db.Column(db.Integer, default=1)
 
 class FAQ(db.Model):
@@ -170,8 +235,8 @@ class FAQ(db.Model):
     id         = db.Column(db.Integer, primary_key=True)
     question   = db.Column(db.Text, nullable=False)
     answer     = db.Column(db.Text, nullable=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=utc_now)
+    updated_at = db.Column(db.DateTime, default=utc_now, onupdate=utc_now)
 
 class DiscoveredLink(db.Model):
     """ลิงก์ภายนอกเครือข่าย มก. ที่ตรวจพบจากการ Scrape หน้าเว็บและ FAQ"""
@@ -185,8 +250,8 @@ class DiscoveredLink(db.Model):
     is_system_mapped = db.Column(db.Boolean, default=False)
     is_ignored       = db.Column(db.Boolean, default=False)
     mapped_at        = db.Column(db.DateTime, nullable=True)
-    created_at       = db.Column(db.DateTime, default=datetime.utcnow)
-    last_seen        = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at       = db.Column(db.DateTime, default=utc_now)
+    last_seen        = db.Column(db.DateTime, default=utc_now)
 
 class SystemSetting(db.Model):
     """การตั้งค่าระบบ เช่น เปิด/ปิดโหมดทดลองใช้งาน"""
@@ -480,7 +545,7 @@ SYSTEM_LINKS_REGISTRY = [
     {
         "id": "curriculum_daas",
         "title": "หลักสูตรวิทยาการวิเคราะห์ข้อมูลและคณิตศาสตร์ประกันภัย (DAAS)",
-        "url": "https://sci.src.ku.ac.th/department/data-analytics-and-actuarial-science/",
+        "url": "https://sci.src.ku.ac.th/program/data-analytics-and-actuarial-science/",
         "desc": "แผนการเรียนและรายวิชาสาขา DAAS",
         "keywords": ("daas", "วิเคราะห์ข้อมูล", "คณิตศาสตร์ประกันภัย", "ประกันภัย", "actuarial"),
         "check_target": "user",
@@ -498,7 +563,7 @@ SYSTEM_LINKS_REGISTRY = [
     {
         "id": "curriculum_chem",
         "title": "หลักสูตรเคมีประยุกต์",
-        "url": "https://sci.src.ku.ac.th/department/applied-chemical-science-and-technology/",
+        "url": "https://sci.src.ku.ac.th/program/applied-chemical-science-and-technology/",
         "desc": "แผนการเรียนและรายวิชาสาขาเคมีประยุกต์",
         "keywords": ("เคมี", "chemical", "เคมีประยุกต์"),
         "check_target": "user",
@@ -507,7 +572,7 @@ SYSTEM_LINKS_REGISTRY = [
     {
         "id": "curriculum_phys",
         "title": "หลักสูตรฟิสิกส์",
-        "url": "https://sci.src.ku.ac.th/department/physics/",
+        "url": "https://sci.src.ku.ac.th/program/physics/",
         "desc": "แผนการเรียนและรายวิชาสาขาฟิสิกส์",
         "keywords": ("ฟิสิกส์", "physics"),
         "check_target": "user",
@@ -595,8 +660,29 @@ def get_matching_system_links(user_message, bot_text="", history=None, initial_l
         if not curriculum_intent and any(k in hist_user_context for k in ("tcas", "รับสมัคร", "portfolio", "admission", "พอร์ต")):
             is_admission_q = True
 
+    # ตรวจสอบเจตนาคำถามหลักสูตร / โครงสร้างวิชา / แผนการเรียน / เปรียบเทียบสาขา
+    is_curr_q = (
+        is_curriculum_query or
+        any(k in user_q for k in (
+            "หลักสูตร", "โครงสร้าง", "แผนการเรียน", "วิชาที่ต้องเรียน", "เรียนอะไร",
+            "มีสาขาอะไร", "สาขาอะไรบ้าง", "มีกี่สาขา", "เปิดสอนสาขา", "มีหลักสูตรอะไร",
+            "หลักสูตรอะไรบ้าง", "ต่างกัน", "จุดเด่น", "cs", "dst", "daas", "วิทยาการคอม", "เทคโนโลยีดิจิทัล"
+        ))
+    )
+
     good_links = []
-    existing_urls = set()
+    existing_canonical_urls = set()
+    existing_canonical_titles = set()
+
+    def _canon_url(u: str) -> str:
+        if not u:
+            return ""
+        return u.strip().rstrip("/").lower()
+
+    def _canon_title(t: str) -> str:
+        if not t:
+            return ""
+        return re.sub(r'[\s\-_()\[\]]+', '', t).lower()
 
     # 1. กลั่นกรอง initial_links จากโมเดล Gemini
     if initial_links:
@@ -605,52 +691,59 @@ def get_matching_system_links(user_message, bot_text="", history=None, initial_l
                 url = l["url"].strip()
 
                 # ตัดลิงก์ตาย/เก่า/ไม่ต้องการ หรือถูกซ่อนโดยแอดมินออกทันที
-                if any(bad in url.lower() for bad in DEAD_OR_OBSOLETE_PATTERNS) or url.rstrip("/").lower() in ignored_db_urls:
+                c_url = _canon_url(url)
+                if any(bad in c_url for bad in DEAD_OR_OBSOLETE_PATTERNS) or c_url in ignored_db_urls:
                     continue
 
-                title = l.get("title") or l.get("name") or ""
+                title = (l.get("title") or l.get("name") or "").strip()
                 # ปรับแก้ลิงก์รับสมัครส่วนกลางให้ชี้มาที่วิทยาเขตศรีราชาโดยตรง
-                if "admissions.ku.ac.th" in url or "admission.ku.ac.th" in url:
+                if "admissions.ku.ac.th" in c_url or "admission.ku.ac.th" in c_url:
                     url = "https://admissions.src.ku.ac.th/"
+                    c_url = _canon_url(url)
                     if "มหาวิทยาลัยเกษตรศาสตร์" in title and "ศรีราชา" not in title:
                         title = "ระบบรับสมัครเข้าศึกษา มก.ศรีราชา"
 
                 # ถ้าเป็นคำถามรับสมัคร ห้ามนำเล่มหลักสูตรเฉพาะทาง (เช่น CS book) ที่โมเดลส่งมา
-                if is_admission_q and any(p in url.lower() for p in ("/course/", "/program/", "/department/")):
+                if is_admission_q and any(p in c_url for p in ("/course/", "/program/", "/department/")):
                     continue
 
-                # ถ้าเป็นคำถามหลักสูตร/มีสาขาอะไรบ้าง แต่ไม่ได้ถามรับสมัคร ห้ามดึงลิงก์รับสมัครที่โมเดลส่งมา
-                if not is_admission_q and any(k in user_q for k in ("มีสาขาอะไร", "สาขาอะไรบ้าง", "มีกี่สาขา", "เปิดสอนสาขา", "มีหลักสูตรอะไร", "หลักสูตรอะไรบ้าง")) and "admissions.src.ku.ac.th" in url:
+                # ถ้าเป็นคำถามหลักสูตร/เปรียบเทียบสาขา แต่ไม่ได้ถามรับสมัคร ห้ามดึงลิงก์รับสมัครที่โมเดลส่งมา
+                if not is_admission_q and is_curr_q and "admissions.src.ku.ac.th" in c_url:
                     continue
 
                 # ถ้าถามเรื่องทุน ไม่เอาลิงก์รับสมัครที่โมเดลส่งมา
-                if is_scholarship_q and "admissions.src.ku.ac.th" in url:
+                if is_scholarship_q and "admissions.src.ku.ac.th" in c_url:
                     continue
 
                 # ถ้าถามเรื่องเครื่องแต่งกาย ไม่เอาลิงก์รับสมัคร และไม่เอาข้อบังคับการศึกษาปริญญาตรีที่โมเดลส่งมา
-                if is_dress_code_q and ("admissions.src.ku.ac.th" in url or "ข้อบังคับมหาวิทยาลัยเกษตรศาสตร์-2566.pdf" in url):
+                if is_dress_code_q and ("admissions.src.ku.ac.th" in c_url or "ข้อบังคับมหาวิทยาลัยเกษตรศาสตร์-2566.pdf" in c_url):
                     continue
 
-                if title and url not in existing_urls:
+                c_title = _canon_title(title)
+                if title and c_url not in existing_canonical_urls and (not c_title or c_title not in existing_canonical_titles):
                     good_links.append({"title": title, "url": url, "desc": l.get("desc", "")})
-                    existing_urls.add(url)
+                    existing_canonical_urls.add(c_url)
+                    if c_title:
+                        existing_canonical_titles.add(c_title)
 
     # 2. จับคู่กับ Registry ตาม Intent และเป้าหมายการตรวจ (Target)
     for item in SYSTEM_LINKS_REGISTRY:
         url = item["url"]
-        if url in existing_urls:
+        c_url = _canon_url(url)
+        c_title = _canon_title(item["title"])
+        if c_url in existing_canonical_urls or (c_title and c_title in existing_canonical_titles):
             continue
 
         # ตัดลิงก์ตาย/เก่า หรือถูกซ่อนโดยแอดมิน
-        if any(bad in url.lower() for bad in DEAD_OR_OBSOLETE_PATTERNS) or url.rstrip("/").lower() in ignored_db_urls:
+        if any(bad in c_url for bad in DEAD_OR_OBSOLETE_PATTERNS) or c_url in ignored_db_urls:
             continue
 
         # กฎ UX: คำถามรับสมัครทั่วไป ห้ามดึงเล่มหลักสูตรเฉพาะทางมาปน
         if is_admission_q and item.get("is_curriculum"):
             continue
 
-        # ถ้าถามเรื่องทุน หรือเรื่องการแต่งกาย ห้ามดึงลิงก์รับสมัคร
-        if (is_scholarship_q or is_dress_code_q) and item.get("is_admission"):
+        # ถ้าถามเรื่องทุน หรือเรื่องการแต่งกาย หรือถามเรื่องหลักสูตรโดยไม่ได้ถามรับสมัคร ห้ามดึงลิงก์รับสมัคร
+        if (is_scholarship_q or is_dress_code_q or (not is_admission_q and is_curr_q)) and item.get("is_admission"):
             continue
 
         # ตรวจสอบว่าต้องมี keyword หลักสูตรก่อนหรือไม่สำหรับเล่มหลักสูตรรายสาขา
@@ -680,7 +773,9 @@ def get_matching_system_links(user_message, bot_text="", history=None, initial_l
                 "url": url,
                 "desc": item.get("desc", "")
             })
-            existing_urls.add(url)
+            existing_canonical_urls.add(c_url)
+            if c_title:
+                existing_canonical_titles.add(c_title)
 
     # กฎ UX: จำกัดจำนวนปุ่มเพื่อความสบายตา ไม่รกหน้าจอ
     # ถ้ามีแบบฟอร์ม PDF แนบอยู่แล้ว ให้แสดงลิงก์ที่เกี่ยวข้องมากที่สุดเพียง 1 ปุ่ม (รวมเป็น 2 ปุ่มบนจอ)
@@ -765,7 +860,7 @@ def sync_discovered_links_from_db():
                 if clean_url not in discovered:
                     discovered[clean_url] = {"source": f"FAQ: {f.question[:50]}", "label": ""}
 
-        now = datetime.utcnow()
+        now = utc_now()
         new_count = 0
         existing_list = DiscoveredLink.query.all()
         existing_map = {}
@@ -849,21 +944,6 @@ def run_scrape(trigger="auto"):
         log_id = log.id
     try:
         print(f"[Scraper] Starting ({trigger})...")
-        # ดึงปฏิทินการศึกษาเข้า DB ก่อนทันที ไม่ต้องรอดึงเว็บครบ 60 หน้า
-        if scrape_calendar:
-            cal_items = scrape_calendar()
-            if cal_items:
-                with app.app_context():
-                    for item in cal_items:
-                        existing = ScrapedPage.query.filter_by(url=item["source"]).first()
-                        if existing:
-                            existing.content = item["content"]
-                            existing.category = item["category"]
-                            existing.last_scraped = datetime.utcnow()
-                        else:
-                            db.session.add(ScrapedPage(url=item["source"], category=item["category"], content=item["content"]))
-                    db.session.commit()
-                load_context_from_db()
         data = get_kusrc_data()
         with app.app_context():
             current_urls = set()
@@ -873,7 +953,7 @@ def run_scrape(trigger="auto"):
                 if existing:
                     existing.content = item["content"]
                     existing.category = item["category"]
-                    existing.last_scraped = datetime.utcnow()
+                    existing.last_scraped = utc_now()
                 else:
                     db.session.add(ScrapedPage(url=item["source"], category=item["category"], content=item["content"]))
             db.session.commit()
@@ -890,7 +970,7 @@ def run_scrape(trigger="auto"):
                 print(f"[Scraper] Skip prune ({len(data)} pages < 30 — อาจ scrape ไม่ครบ)")
             log = db.session.get(ScrapeLog, log_id)
             log.pages = len(data)
-            log.finished_at = datetime.utcnow()
+            log.finished_at = utc_now()
             log.status = "done"
             db.session.commit()
         load_context_from_db()
@@ -899,10 +979,11 @@ def run_scrape(trigger="auto"):
         print(f"[Scraper] Done — {len(data)} pages saved, {removed} pruned.")
     except Exception as e:
         with app.app_context():
-            log = ScrapeLog.query.get(log_id)
-            log.status = "error"
-            log.finished_at = datetime.utcnow()
-            db.session.commit()
+            log = db.session.get(ScrapeLog, log_id)
+            if log:
+                log.status = "error"
+                log.finished_at = utc_now()
+                db.session.commit()
         print(f"[Scraper] Error: {e}")
     finally:
         _scrape_lock.release()
@@ -919,11 +1000,11 @@ def start_scheduler():
 
     def _loop():
         while True:
-            now_utc = datetime.utcnow()
+            now_utc = utc_now()
             now_thai = now_utc + timedelta(hours=THAI_OFFSET)
             next_midnight_thai = now_thai.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
             next_midnight_utc  = next_midnight_thai - timedelta(hours=THAI_OFFSET)
-            wait_secs = (next_midnight_utc - datetime.utcnow()).total_seconds()
+            wait_secs = (next_midnight_utc - utc_now()).total_seconds()
             thai_time_str = next_midnight_thai.strftime("%d/%m/%Y 00:00")
             print(f"[Scheduler] Next auto-scrape at {thai_time_str} Thai time ({wait_secs/3600:.1f} hours from now)")
             time.sleep(wait_secs)
@@ -931,7 +1012,7 @@ def start_scheduler():
             try:
                 with app.app_context():
                     from datetime import timedelta as _td
-                    cutoff = datetime.utcnow() - _td(days=30)
+                    cutoff = utc_now() - _td(days=30)
                     deleted = ChatLog.query.filter(ChatLog.timestamp < cutoff).delete()
                     db.session.commit()
                     if deleted:
@@ -946,6 +1027,33 @@ def start_scheduler():
 # PDF helpers
 # ──────────────────────────────────────────
 PDF_DIR = os.path.join(os.path.dirname(__file__), "static", "docs", "forms")
+CURRICULUM_PDF_DIR = os.path.join(os.path.dirname(__file__), "static", "docs", "curriculum", "pdf")
+
+_CURRICULUM_PDF_TITLES = {
+    "AppliedChemistry_65.pdf": "เล่มหลักสูตร วิทยาศาสตร์และเทคโนโลยีเคมีประยุกต์ (2565)",
+    "ComputerScience_65.pdf": "เล่มหลักสูตร วิทยาการคอมพิวเตอร์ (2565)",
+    "DataAnalytics_Actuarial_65.pdf": "เล่มหลักสูตร วิทยาการวิเคราะห์ข้อมูลและคณิตศาสตร์ประกันภัย (2565)",
+    "DigitalTechnology_66.pdf": "เล่มหลักสูตร วิทยาการและเทคโนโลยีดิจิทัล (2566)",
+    "EnvironmentalScience_65.pdf": "เล่มหลักสูตร วิทยาศาสตร์และเทคโนโลยีสิ่งแวดล้อม (2565)",
+    "GeneralEducation_67.pdf": "เล่มหลักสูตร หมวดวิชาศึกษาทั่วไป มก. (2567)",
+    "Physics_66.pdf": "เล่มหลักสูตร ฟิสิกส์ (2566)",
+}
+
+def _list_downloadable_pdfs():
+    """คืนค่ารายการ (dir_path, filename, title, category) โดยเรียงแบบฟอร์มก่อนเพื่อคง doc_id เดิม"""
+    items = []
+    if os.path.exists(PDF_DIR):
+        for fn in sorted(os.listdir(PDF_DIR)):
+            if fn.endswith(".pdf"):
+                clean_title = re.sub(r'\.pdf$', '', fn, flags=re.I)
+                clean_title = re.sub(r'[-_]?(?:revised|revision)', '', clean_title, flags=re.I).strip()
+                items.append((PDF_DIR, fn, clean_title, get_pdf_category(fn)))
+    if os.path.exists(CURRICULUM_PDF_DIR):
+        for fn in sorted(os.listdir(CURRICULUM_PDF_DIR)):
+            if fn.endswith(".pdf"):
+                fallback_title = re.sub(r'\.pdf$', '', fn, flags=re.I).replace("_", " ").strip()
+                items.append((CURRICULUM_PDF_DIR, fn, _CURRICULUM_PDF_TITLES.get(fn, fallback_title), "เล่มหลักสูตร"))
+    return items
 
 def get_pdf_category(fn):
     cats = {
@@ -978,8 +1086,8 @@ def clean_response(text):
             except Exception:
                 text = resp_m.group(1)
     if "<" in text and ">" in text: return text.strip()
-    text = re.sub(r"\*\*(.*?)\*\*", r"\1", text)
-    text = re.sub(r"\*(.*?)\*",     r"\1", text)
+    # คง **ตัวหนา** ให้ chat.html แปลงเป็น <strong> โดยล้างเฉพาะ *...* เดี่ยว
+    text = re.sub(r"(?<!\*)\*(?!\*)(.*?)(?<!\*)\*(?!\*)", r"\1", text)
     text = re.sub(r"```[\s\S]*?```", "", text)
     emoji_re = re.compile("[" + u"\U0001F600-\U0001F64F" + u"\U0001F300-\U0001F5FF"
         + u"\U0001F680-\U0001F6FF" + u"\U0001F1E0-\U0001F1FF"
@@ -1035,6 +1143,42 @@ def sanitize_bot_output(bot_text, has_links=False, query_context=""):
 
     return bot_text
 
+_CTX_INT_RE = re.compile(r'(?<![\d\-/=:\.])(?:\d{1,3}(?:,\d{3})+|\d{3,7})(?![\d\-/\.])')
+
+def _is_derived_context_math(fact_str: str, combined_ctx: str) -> bool:
+    """อนุญาตผลบวก/ผลต่างจากตัวเลขจำนวนเต็มหรือเงิน (>= 100) ที่ปรากฏในบริบทจริง"""
+    num_only = re.sub(r'[^\d\.,]', '', (fact_str or "").lower()).strip()
+    if not num_only:
+        return False
+    if "." in num_only:
+        if not num_only.endswith(".00"):
+            return False
+        num_only = num_only[:-3]
+    digits_only = num_only.replace(",", "")
+    if not digits_only.isdigit():
+        return False
+    val = int(digits_only)
+    # คงความเข้มงวดกับเลขจำนวนน้อย (เช่น GPA/หน่วยกิต) และปี พ.ศ. 25xx
+    if val < 100 or ("," not in num_only and 2500 <= val <= 2599):
+        return False
+
+    ctx_nums = set()
+    for m in _CTX_INT_RE.finditer(combined_ctx or ""):
+        raw_tok = m.group(0)
+        raw_digits = raw_tok.replace(",", "")
+        if not raw_digits.isdigit():
+            continue
+        n = int(raw_digits)
+        if n >= 100 and not ("," not in raw_tok and 2500 <= n <= 2599):
+            ctx_nums.add(n)
+
+    if not ctx_nums:
+        return False
+    for a in ctx_nums:
+        if (val - a) in ctx_nums or (val + a) in ctx_nums or (a - val) in ctx_nums:
+            return True
+    return False
+
 def evaluate_faithfulness(bot_text, context_text):
     """ตรวจสอบความซื่อตรงของข้อมูล (Faithfulness) ตามมาตรฐาน Skill rag-system-auditor
     สกัดตัวเลข, วันที่, ค่าธรรมเนียม, หน่วยกิต และคำสำคัญเฉพาะทางในคำตอบ แล้วตรวจว่ามีใน Context หรือไม่"""
@@ -1043,9 +1187,9 @@ def evaluate_faithfulness(bot_text, context_text):
 
     combined_ctx = (context_text or "").lower()
 
-    # สกัดตัวเลขสำคัญและข้อเท็จจริงทางการเงิน/การศึกษา
+    # สกัดตัวเลขสำคัญและข้อเท็จจริงทางการเงิน/การศึกษา/เกรดเฉลี่ย
     number_patterns = re.findall(
-        r'\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b|\b\d+(?:\.\d+)?\s*(?:บาท|หน่วยกิต|วัน|เทอม|เดือน|ปี|รอบ|gpax)\b|\b(?:25\d{2}|6\d{1})\b',
+        r'\b[1-4]\.\d{2}\b|\b\d{1,3}(?:,\d{3})+(?:\.\d+)?\b|\b\d+(?:\.\d+)?\s*(?:บาท|หน่วยกิต|วัน|เทอม|เดือน|ปี|รอบ|gpax|เกรด)\b|\b(?:25\d{2}|6\d{1})\b',
         bot_text,
         flags=re.I
     )
@@ -1057,7 +1201,13 @@ def evaluate_faithfulness(bot_text, context_text):
     for f in facts_to_check:
         clean_f = f.lower()
         num_only = re.sub(r'[^\d\.,]', '', clean_f).strip()
-        if clean_f in combined_ctx or (num_only and num_only in combined_ctx):
+        is_thai_year_shorthand = (
+            num_only.isdigit()
+            and len(num_only) == 4
+            and num_only.startswith("25")
+            and bool(re.search(rf'(?:ม\.ค\.|ก\.พ\.|มี\.ค\.|เม\.ย\.|พ\.ค\.|มิ\.ย\.|ก\.ค\.|ส\.ค\.|ก\.ย\.|ต\.ค\.|พ\.ย\.|ธ\.ค\.|พ\.ศ\.)\s*{num_only[2:]}(?!\d)', combined_ctx))
+        )
+        if clean_f in combined_ctx or (num_only and num_only in combined_ctx) or is_thai_year_shorthand or _is_derived_context_math(f, combined_ctx):
             grounded_facts.append(f)
         else:
             unsupported_facts.append(f)
@@ -1077,7 +1227,7 @@ def evaluate_faithfulness(bot_text, context_text):
     total_facts = len(grounded_facts) + len(unsupported_facts)
     if total_facts == 0:
         score = 1.0
-        status = "grounded"
+        status = "unverified"
     else:
         score = round(len(grounded_facts) / total_facts, 2)
         if score >= 0.85:
@@ -1117,35 +1267,44 @@ def _perform_retrieval(user_message, history=None):
         "คณะวิทยาศาสตร์", "มหาวิทยาลัยเกษตรศาสตร์", "วิทยาเขตศรีราชา",
         "ม.เกษตร", "ศรีราชา", "เกษตร", "ต้องทำยังไง", "ทำยังไง", "ยังไง",
         "อย่างไร", "อะไรบ้าง", "เมื่อไหร่", "เท่าไหร่", "ที่ไหน", "ได้ไหม",
-        "ได้มั้ย", "คือใคร", "สอบถามได้ไหม", "สอบถามได้มั้ย", "สอบถาม", "ขอสอบถาม",
+        "ได้มั้ย", "คือใคร", "คืออะไร", "สอบถามได้ไหม", "สอบถามได้มั้ย", "สอบถาม", "ขอสอบถาม",
         "รบกวนสอบถาม", "รบกวน", "อยากทราบ", "ขอถาม", "อยากรู้", "พอดีจะ", "พอดี",
-        "ครับ", "ค่ะ", "คะ", "นะ",
+        "วันนี้", "พรุ่งนี้", "เมื่อวาน", "ตอนนี้", "หน่อย",
     )
-    cleaned_msg = msg_lower
-    for sw in _stop_words:
-        cleaned_msg = cleaned_msg.replace(sw, " ")
-    cleaned_msg = cleaned_msg.strip()
+
+    def _clean_query_noise(text: str) -> str:
+        t = text
+        for sw in _stop_words:
+            t = t.replace(sw, " ")
+        # ล้างคำลงท้าย/คำเชื่อมสั้นเฉพาะขอบคำหรือท้ายประโยค กันการตัดกลางคำไทย (เช่น แนะนำ, ชนะ)
+        t = re.sub(r'(?:^|\s)(?:นะ|คะ|ค่ะ|ครับ|ไหม|มั้ย|กับ)(?=\s|$)|(?:นะครับ|นะคะ|นะ|คะ|ค่ะ|ครับ|ไหม|มั้ย)+$', ' ', t)
+        return re.sub(r'\s+', ' ', t).strip()
+
+    cleaned_msg = _clean_query_noise(msg_lower)
     search_src = cleaned_msg if len(cleaned_msg) >= 2 else msg_lower
 
     kw = [w for w in search_src.split() if len(w) > 1]
     compact = search_src.replace(" ", "")
     kw += [compact[i:i+3] for i in range(len(compact) - 2)]
     if prev_user_text:
-        cleaned_prev = prev_user_text
-        for sw in _stop_words:
-            cleaned_prev = cleaned_prev.replace(sw, " ")
-        cleaned_prev = cleaned_prev.strip()
+        cleaned_prev = _clean_query_noise(prev_user_text)
         prev_kw = [w for w in cleaned_prev.split() if len(w) > 1]
         compact_prev = cleaned_prev.replace(" ", "")
         prev_kw += [compact_prev[i:i+3] for i in range(len(compact_prev) - 2)]
 
-        _topic_kws = ("วิชา", "หลักสูตร", "ค่าเทอม", "ทุน", "ปฏิทิน", "สอบ", "ลงทะเบียน", "คำร้อง", "เอกสาร", "หอพัก", "เกรด", "ปี", "เทอม")
-        is_follow_up = len(cleaned_msg) < 30 or not any(k in cleaned_msg for k in _topic_kws) or any(k in msg_lower for k in ("บอกผม", "บอกได้", "สาขา", "ภาค", "แล้ว", "ต่อ", "เพิ่มเติม"))
+        # นับเป็นคำถามต่อเนื่องเฉพาะเมื่อมีคำเชื่อมบริบทจริง หรือสั้นจนไม่มีเนื้อหาของตัวเอง กันบริบทสาขาเดิมหลุดเข้าคำถามเรื่องอื่น
+        _followup_markers = (
+            "แล้ว", "ต่อ", "เพิ่มเติม", "บอกผม", "บอกได้", "อันนี้", "อันนั้น",
+            "สาขานี้", "สาขานั้น", "ภาคพิเศษ", "ภาคปกติ", "ล่ะ", "ละ",
+            "ประจำสาขา", "ของสาขา", "กี่หน่วยกิต", "ใครเป็นประธาน",
+        )
+        is_follow_up = len(cleaned_msg) < 8 or any(k in msg_lower for k in _followup_markers)
         if is_follow_up and prev_kw:
             kw = list(dict.fromkeys(kw + prev_kw))
         else:
             kw = list(dict.fromkeys(kw))
     else:
+        is_follow_up = False
         kw = list(dict.fromkeys(kw))
 
     def _score(text):
@@ -1154,47 +1313,81 @@ def _perform_retrieval(user_message, history=None):
         t = text.lower()
         return sum(1 for w in kw if w in t)
 
+    def _has_major_kw(text: str, kw_list: tuple) -> bool:
+        for k in kw_list:
+            if k.isascii() and len(k) <= 4:
+                if re.search(rf'(?<![a-z0-9]){re.escape(k)}(?![a-z0-9])', text):
+                    return True
+            elif k in text:
+                return True
+        return False
+
     _MAJOR_MAP = {
         "cs": {
             "keywords": ("cs", "วิทยาการคอมพิวเตอร์", "วิทย์คอม", "คอมพิวเตอร์", "com sci", "computer science"),
             "files": ("computerscience", "computer-science"),
+            "cats": ("cs_program", "special_cs", "cs_staff"),
         },
         "dst": {
-            "keywords": ("dst", "ดิจิทัล", "ดิจิทัลไซน์", "digital", "เทคโนโลยีดิจิทัล"),
+            "keywords": ("dst", "ดิจิทัล", "ดิจิทัลไซน์", "digital", "เทคโนโลยีดิจิทัล", "วิทยาการและเทคโนโลยีดิจิทัล"),
             "files": ("digital", "digitaltechnology"),
+            "cats": ("digital_program", "special_digital", "it_staff"),
         },
         "it": {
-            "keywords": ("it", "เทคโนโลยีสารสนเทศ", "สารสนเทศ", "information technology"),
+            "keywords": ("it", "ไอที", "เทคโนโลยีสารสนเทศ", "สารสนเทศ", "information technology"),
             "files": ("information technology", "information-technology"),
+            "cats": ("it_program", "special_it", "it_staff"),
         },
         "data": {
-            "keywords": ("data", "วิเคราะห์ข้อมูล", "คณิตศาสตร์ประกันภัย", "ประกันภัย", "actuarial"),
+            "keywords": ("daas", "data", "วิเคราะห์ข้อมูล", "คณิตศาสตร์ประกันภัย", "คณิตศาสตร์", "ประกันภัย", "สถิติ", "actuarial"),
             "files": ("data-analytics", "dataanalytics", "actuarial"),
+            "cats": ("math_program", "math_staff"),
         },
         "env": {
             "keywords": ("สิ่งแวดล้อม", "environmental"),
             "files": ("environmental", "environmentalscience"),
+            "cats": ("env_program", "env_staff"),
         },
         "physics": {
             "keywords": ("ฟิสิกส์", "physics"),
             "files": ("physics",),
+            "cats": ("physics_program", "physics_staff"),
         },
         "chem": {
-            "keywords": ("เคมี", "chemical"),
+            "keywords": ("เคมี", "เคมีประยุกต์", "chemical"),
             "files": ("chemical", "chemistry", "appliedchemistry"),
+            "cats": ("chem_program", "chem_master_program", "chem_staff"),
+        },
+        "sports": {
+            "keywords": ("พลศึกษา", "วิทยาศาสตร์การกีฬา", "การกีฬา", "sports"),
+            "files": ("sports-science",),
+            "cats": ("sports_staff",),
+        },
+        "natural_product": {
+            "keywords": ("ผลิตภัณฑ์ธรรมชาติ", "natural product", "natural-product"),
+            "files": ("natural-product-science-technology-master", "/program/natural-product-science-technology"),
+            "cats": ("env_master", "env_master_program"),
         },
         "gened": {
             "keywords": ("ศึกษาทั่วไป", "หมวดศึกษาทั่วไป", "วิชาศึกษาทั่วไป", "gened", "gen-ed", "general education"),
             "files": ("generaleducation", "gened"),
+            "cats": (),
         },
     }
+
+    def _doc_matches_major(src_lower: str, cat_lower: str, m_key: str) -> bool:
+        m_info = _MAJOR_MAP[m_key]
+        if cat_lower and cat_lower in m_info.get("cats", ()):
+            return True
+        return any(f in src_lower for f in m_info["files"])
+
     detected_majors = set()
     for m_key, m_info in _MAJOR_MAP.items():
-        if any(k in msg_lower for k in m_info["keywords"]):
+        if _has_major_kw(msg_lower, m_info["keywords"]):
             detected_majors.add(m_key)
-    if not detected_majors and prev_user_text:
+    if not detected_majors and prev_user_text and is_follow_up:
         for m_key, m_info in _MAJOR_MAP.items():
-            if any(k in prev_user_text for k in m_info["keywords"]):
+            if _has_major_kw(prev_user_text, m_info["keywords"]):
                 detected_majors.add(m_key)
 
     context_str = ""
@@ -1214,6 +1407,41 @@ def _perform_retrieval(user_message, history=None):
         "มีหลักสูตรอะไร", "หลักสูตรอะไรบ้าง", "มีกี่หลักสูตร", "รวมหลักสูตร", "ทุกสาขา", "ทุกหลักสูตร",
         "สาขาทั้งหมด", "หลักสูตรทั้งหมด", "เรียนสาขาไหนดี", "แนะนำสาขา", "มีสาขา"
     ))
+    is_exec_q = any(k in msg_lower for k in (
+        "คณบดี", "รองคณบดี", "ผู้ช่วยคณบดี", "หัวหน้าภาควิชา", "หัวหน้าภาค",
+        "หัวหน้าสำนักงาน", "ผู้บริหาร", "ทำเนียบคณบดี"
+    )) and not any(k in msg_lower for k in ("ลาพัก", "คำร้อง", "แบบฟอร์ม", "ผ่อนผัน"))
+    is_staff_q = any(k in msg_lower for k in (
+        "อาจารย์", "คณาจารย์", "ผู้สอน", "บุคลากร", "ประธานหลักสูตร",
+        "ผู้ประสานงานสาขา", "สายสนับสนุน", "เจ้าหน้าที่"
+    )) and not any(k in msg_lower for k in ("อาจารย์ที่ปรึกษา", "ใบลา", "ลาป่วย", "ลาพัก", "ขอสอบชดใช้", "ถอนรายวิชา", "เปิดหมู่เรียน", "เซคเต็ม"))
+    is_credit_or_struct_q = any(k in msg_lower for k in (
+        "หน่วยกิต", "โครงสร้างหลักสูตร", "โครงสร้างวิชา", "หมวดวิชา",
+        "ทั้งหมดกี่", "เรียนกี่", "หลักสูตร", "แผนการเรียน"
+    ))
+    is_master_q = any(k in msg_lower for k in ("ป.โท", "ปริญญาโท", "มหาบัณฑิต", "บัณฑิตศึกษา"))
+
+    _ALL_STAFF_CATS = (
+        "dean", "cs_staff", "it_staff", "env_staff", "env_master",
+        "chem_staff", "math_staff", "physics_staff", "sports_staff",
+        "academic_staff", "support_staff",
+    )
+
+    _CURRICULUM_TXT_KWS = (
+        "รายวิชา", "รหัสวิชา", "รหัส ", "สหกิจ", "ฝึกงาน", "วิชาเลือก", "วิชาบังคับ", "วิชาแกน",
+        "ศึกษาทั่วไป", "หมวดวิชา", "เกรด", "เกียรตินิยม", "เทียบโอน", "โอนหน่วยกิต",
+        "ย้ายสาขา", "ย้ายคณะ", "วิทยาทัณฑ์", "ติดโปร", "พ้นสภาพ", "ข้อบังคับ", "credit",
+    )
+    allow_curriculum_txt = (
+        bool(detected_majors or is_credit_or_struct_q or is_master_q)
+        or any(k in msg_lower for k in _CURRICULUM_TXT_KWS)
+        or bool(re.search(r'\b0\d{7}\b', msg_lower))
+    )
+    _TCAS_KWS = (
+        "tcas", "สมัคร", "รับเข้า", "สัมภาษณ์", "ค่าเทอม", "ค่าธรรมเนียม",
+        "ค่าเล่าเรียน", "พอร์ต", "portfolio", "โควตา", "คุณสมบัติ", "จำนวนรับ", "รับกี่คน", "ม.6", "ปวช",
+    )
+    allow_tcas = any(k in msg_lower for k in _TCAS_KWS)
 
     if CHAT_CONTEXT:
         for idx, d in enumerate(CHAT_CONTEXT):
@@ -1221,22 +1449,57 @@ def _perform_retrieval(user_message, history=None):
             content_lower = d.get("content", "").lower()
             cat_lower = d.get("category", "").lower()
 
+            if not allow_curriculum_txt and ".txt" in src_lower:
+                continue
+            if not allow_tcas and "admission_tcas" in cat_lower:
+                continue
+
             sc = _score(content_lower) + _score(cat_lower) * 3 + _score(src_lower) * 3
             if detected_majors:
+                is_target_major = any(_doc_matches_major(src_lower, cat_lower, m_key) for m_key in detected_majors)
                 for m_key in detected_majors:
-                    target_files = _MAJOR_MAP[m_key]["files"]
-                    if any(f in src_lower for f in target_files):
+                    if _doc_matches_major(src_lower, cat_lower, m_key):
                         sc += 25
                 if "หลักสูตร" in cat_lower or ".txt" in src_lower or ".pdf" in src_lower:
-                    is_target_major = any(any(f in src_lower for f in _MAJOR_MAP[m_key]["files"]) for m_key in detected_majors)
                     if not is_target_major:
                         sc -= 15
+                if is_target_major and is_credit_or_struct_q:
+                    if "program" in cat_lower or "/program/" in src_lower:
+                        sc += (45 if ("_master" in cat_lower and not is_master_q) else 65)
+                    elif ".txt" in src_lower and any(k in content_lower for k in ("โครงสร้างหลักสูตร", "จำนวนหน่วยกิตรวม", "หมวดวิชาศึกษาทั่วไป")):
+                        sc += 15
+
+            if is_master_q:
+                if cat_lower in ("env_master", "env_master_program", "chem_master_program") or any(u in src_lower for u in ("natural-product-science-technology", "applied-chemical-technology")):
+                    sc += 35
+
+            if is_exec_q:
+                if cat_lower == "dean":
+                    sc += 80
+                elif cat_lower == "dean_history":
+                    sc += (85 if any(k in msg_lower for k in ("ทำเนียบ", "อดีต")) else 25)
+
+            if is_staff_q:
+                if detected_majors:
+                    if any(_doc_matches_major(src_lower, cat_lower, m_key) for m_key in detected_majors) and ("staff" in cat_lower or cat_lower == "env_master" or "/department/" in src_lower):
+                        sc += 80
+                    elif ".txt" in src_lower and not any(k in msg_lower for k in ("วิชา", "หน่วยกิต", "แผนการเรียน")):
+                        sc -= 30
+                else:
+                    if cat_lower in _ALL_STAFF_CATS:
+                        sc += 60
+                    if any(k in msg_lower for k in ("สนับสนุน", "เจ้าหน้าที่", "สำนักงาน", "เลขานุการ")) and cat_lower == "support_staff":
+                        sc += 40
+                    if ".txt" in src_lower:
+                        sc -= 30
 
             if is_all_programs_q:
                 if "program" in src_lower or "curriculum" in cat_lower or "regis_curriculum" in cat_lower:
                     sc += 35
                 elif ".txt" in src_lower:
                     sc = min(sc, 5)
+                if cat_lower in ("program_index", "curriculum", "regis_curriculum") or src_lower.rstrip("/") in ("https://sci.src.ku.ac.th/program", "https://sci.src.ku.ac.th/en/program"):
+                    sc += 25
 
             doc_score_map[id(d)] = sc
             if sc > 0:
@@ -1245,7 +1508,24 @@ def _perform_retrieval(user_message, history=None):
         scored_docs.sort(key=lambda x: (-x[0], x[1]))
         filtered = [d for _, _, d in scored_docs]
 
-        if any(k in msg_lower for k in ("ค่าเทอม", "ค่าธรรมเนียม", "ค่าเล่าเรียน", "หลักสูตรพิเศษ", "ภาคพิเศษ")):
+        if is_exec_q:
+            exec_cats = ["dean_history", "dean"] if any(k in msg_lower for k in ("ทำเนียบ", "อดีต")) else ["dean"]
+            exec_docs = []
+            for ec in exec_cats:
+                exec_docs.extend([d for d in CHAT_CONTEXT if d.get("category", "").lower() == ec])
+            filtered = exec_docs + [d for d in filtered if d not in exec_docs]
+        elif is_staff_q and not detected_majors:
+            if any(k in msg_lower for k in ("สนับสนุน", "เจ้าหน้าที่", "สำนักงาน", "เลขานุการ")):
+                staff_order = ("support_staff", "dean", "cs_staff", "it_staff", "env_staff", "env_master", "chem_staff", "math_staff", "physics_staff", "sports_staff", "academic_staff")
+            else:
+                staff_order = ("dean", "cs_staff", "it_staff", "env_staff", "env_master", "chem_staff", "math_staff", "physics_staff", "sports_staff", "academic_staff", "support_staff")
+            staff_docs = []
+            for sc_cat in staff_order:
+                staff_docs.extend([d for d in CHAT_CONTEXT if d.get("category", "").lower() == sc_cat])
+            filtered = staff_docs + [d for d in filtered if d not in staff_docs]
+
+        is_tuition_q = any(k in msg_lower for k in ("ค่าเทอม", "ค่าธรรมเนียม", "ค่าเล่าเรียน", "หลักสูตรพิเศษ", "ภาคพิเศษ"))
+        if is_tuition_q:
             fee_docs = [d for d in CHAT_CONTEXT if any(k in d.get("category", "").lower() or k in d.get("source", "").lower() for k in ("ค่าธรรมเนียม", "ระเบียบการ", "tuition", "fee", "tcas"))]
             prog_docs = [d for d in filtered if "program" in d.get("category", "")]
             top_tuition_docs = fee_docs + [d for d in prog_docs if d not in fee_docs]
@@ -1255,24 +1535,74 @@ def _perform_retrieval(user_message, history=None):
         cal_clean_text = re.sub(r'สอบถาม|ทดสอบ|ตรวจสอบ', ' ', msg_lower)
         _cal_kw = ("วันสอบ", "ตารางสอบ", "ห้องสอบ", "สอบกลางภาค", "สอบปลายภาค", "สอบไล่", "ขอสอบ",
                    "ปฏิทิน", "เปิดเทอม", "ปิดเทอม", "เปิดภาค", "ปิดภาค",
-                   "ลงทะเบียน", "ถอน", "เพิ่มวิชา", "กำหนดการ", "เทอม", "ภาคเรียน", "วันสุดท้าย")
+                   "ลงทะเบียน", "ถอน", "ดรอป", "add/drop", "add-drop", "เพิ่มวิชา", "เพิ่มรายวิชา", "ลงทะเบียนเพิ่ม", "แอดวิชา", "แอดมือ", "ขอแอด", "กำหนดการ", "เทอม", "ภาคเรียน", "วันสุดท้าย")
         has_cal_match = any(k in cal_clean_text for k in _cal_kw) or bool(re.search(r'(?<![ก-๙])สอบ(?![ก-๙])', cal_clean_text))
         if has_cal_match and "ค่าเทอม" not in msg_lower:
             cal_docs = [d for d in CHAT_CONTEXT if "ปฏิทิน" in d.get("category", "")]
-            filtered = cal_docs + [d for d in filtered if d not in cal_docs]
+            rest_docs = [d for d in filtered if d not in cal_docs]
+            if not detected_majors and not is_credit_or_struct_q:
+                rest_docs = rest_docs[:2]
+            filtered = cal_docs + rest_docs
 
-        if is_overview:
+        is_pure_datetime_q = any(p in raw_compact for p in (
+            "วันนี้วันที่เท่าไหร่", "วันนี้วันที่เท่าไร", "วันนี้วันอะไร", "ตอนนี้กี่โมง", "เวลาเท่าไหร่", "เวลาเท่าไร", "วันนี้วันที่"
+        )) and not any(k in raw_compact for k in ("สอบ", "เรียน", "ลงทะเบียน", "เปิดเทอม", "ปิดเทอม", "ปฏิทิน", "ค่าเทอม", "เกรด", "กิจกรรม"))
+
+        has_domain_intent = bool(
+            detected_majors or is_exec_q or is_staff_q or is_all_programs_q
+            or is_credit_or_struct_q or is_master_q or is_tuition_q
+            or has_cal_match or allow_curriculum_txt or allow_tcas
+        )
+        top_doc_score = max((doc_score_map.get(id(d), 0) for d in filtered), default=0)
+        top_doc_ratio = top_doc_score / max(1, len(kw))
+        # คำถามทั่วไปที่ไม่มีหมวดเจาะจงและได้แค่คะแนนเศษบังเอิญจาก 3-gram ไม่ต้องส่งเว็บคณะเข้าไป
+        low_signal_off_topic = (not has_domain_intent) and (top_doc_ratio < 0.62)
+
+        max_docs = 12 if (is_staff_q and not detected_majors) else 8
+        if is_overview or is_pure_datetime_q:
             docs_to_use = []
-        elif filtered:
-            docs_to_use = filtered[:8]
+        elif filtered and not low_signal_off_topic:
+            if not has_domain_intent and top_doc_score >= 4:
+                min_keep = max(4, top_doc_score * 0.5)
+                filtered = [d for d in filtered if doc_score_map.get(id(d), 0) >= min_keep]
+            docs_to_use = filtered[:max_docs]
         else:
-            docs_to_use = CHAT_CONTEXT[:2]
+            docs_to_use = []
             is_fallback = True
 
-        context_str = "\n\nRelevant Information:\n"
+        # คุมงบประมาณอักขระเพื่อป้องกัน Input Token ชนเพดาน 250k TPM
+        max_doc_long = 16000
+        max_doc_short = 6000
+        max_total_context_chars = 60000
+        context_str = "\n\nRelevant Information:\n" if docs_to_use else ""
         for doc in docs_to_use:
-            limit = 40000 if ("ปฏิทิน" in doc.get("category", "") or "หลักสูตร" in doc.get("category", "") or "ระเบียบการ" in doc.get("category", "") or ".pdf" in doc.get("source", "").lower()) else 6000
-            context_str += f"Source: {doc['source']} ({doc['category']})\nContent: {doc['content'][:limit]}\n\n"
+            remaining_budget = max_total_context_chars - len(context_str)
+            if remaining_budget <= 200:
+                break
+            cat_l = doc.get("category", "").lower()
+            src_l = doc.get("source", "").lower()
+            is_long_doc = (
+                "ปฏิทิน" in cat_l
+                or "หลักสูตร" in cat_l
+                or "ระเบียบการ" in cat_l
+                or "program" in cat_l
+                or "curriculum" in cat_l
+                or "/program/" in src_l
+                or ".pdf" in src_l
+            )
+            limit = max_doc_long if is_long_doc else max_doc_short
+            doc_content = doc.get("content", "")
+            if (
+                len(docs_to_use) > 8
+                and "\nลิงก์ที่เกี่ยวข้องในหน้านี้:" in doc_content
+                and ("staff" in cat_l or cat_l in ("dean", "env_master"))
+            ):
+                doc_content = doc_content.split("\nลิงก์ที่เกี่ยวข้องในหน้านี้:", 1)[0].strip()
+            header = f"Source: {doc['source']} ({doc['category']})\nContent: "
+            content_budget = min(limit, max(0, remaining_budget - len(header) - 2))
+            if content_budget <= 0:
+                break
+            context_str += f"{header}{doc_content[:content_budget]}\n\n"
 
     faq_str = ""
     scored_faq = []
@@ -1323,12 +1653,47 @@ def _perform_retrieval(user_message, history=None):
         "faq_str": faq_str
     }
 
+def _build_verification_context(context_str: str, faq_str: str, thai_now: str = "") -> str:
+    """รวมบริบทอ้างอิงทั้งหมดที่ใช้ตรวจ Faithfulness ให้ตรงกันทั้งตอนตอบจริงและหน้า Debug"""
+    parts = []
+    if thai_now and "[วันเวลาปัจจุบัน]" not in (context_str or ""):
+        parts.append(f"[วันเวลาปัจจุบัน]: {thai_now}")
+    if context_str:
+        parts.append(context_str)
+    if faq_str:
+        parts.append(faq_str)
+    if prompt:
+        parts.append(prompt)
+    return "\n\n".join(parts).lower()
+
+def _build_system_debug_info(route: str, reason: str, confidence_score: int = 0,
+                             confidence_level: str = "LOW", model: str = "system_error",
+                             kw=None, detected_majors=None) -> dict:
+    """สร้างข้อมูล Debug มาตรฐานสำหรับกรณี System Error หรือ Early Return"""
+    return {
+        "route": route,
+        "confidence_score": confidence_score,
+        "confidence_level": confidence_level,
+        "confidence_reasons": [reason],
+        "faithfulness": {"status": "unverified", "score": 0.0, "grounded_facts": [], "unsupported_facts": []},
+        "retrieved_sources": [],
+        "matched_faq": [],
+        "detected_majors": sorted(m.upper() for m in detected_majors) if detected_majors else [],
+        "extracted_keywords": kw or [],
+        "suggested_files": [],
+        "suggested_links": [],
+        "model": model,
+        "timestamp": utc_now().isoformat(),
+        "is_reconstructed": False,
+    }
+
 def compute_rag_debug_info(user_message, bot_text, good_files, good_links,
                            docs_to_use, scored_docs_map, scored_faq,
                            detected_majors, kw, is_fallback, is_overview,
-                           context_str="", faq_str="", is_all_programs_q=False):
+                           context_str="", faq_str="", is_all_programs_q=False,
+                           is_intercepted=False):
     """คำนวณระดับความมั่นใจ และรวบรวมที่มาของข้อมูล (The RAG Triad Analysis)"""
-    top_doc_score = max(scored_docs_map.values()) if scored_docs_map else 0
+    top_doc_score = max((scored_docs_map.get(id(d), 0) for d in (docs_to_use or [])), default=0)
     top_faq_score = scored_faq[0][0] if scored_faq else 0
 
     reasons = []
@@ -1350,20 +1715,20 @@ def compute_rag_debug_info(user_message, bot_text, good_files, good_links,
 
     if faq_actually_cited and top_faq_score >= 18:
         confidence_score += 28
-        reasons.append(f"พบคู่คำถาม-คำตอบตรงใน FAQ (คะแนนความตรง {int(top_faq_score)})")
+        reasons.append(f"พบคู่คำถามคำตอบตรงในคลังคำถามพบบ่อย ได้คะแนนความตรง {int(top_faq_score)}")
     elif faq_actually_cited and top_faq_score >= 10:
         confidence_score += 15
-        reasons.append(f"พบ FAQ ที่มีคำสำคัญสอดคล้อง (คะแนน {int(top_faq_score)})")
+        reasons.append(f"พบคลังคำถามพบบ่อยที่มีคำสำคัญสอดคล้อง ได้คะแนน {int(top_faq_score)}")
 
     if top_doc_score >= 25:
         confidence_score += 22
-        reasons.append(f"พบคลังข้อมูลหน้าเว็บ/ระเบียบการตรงจุดสูงมาก (คะแนน {top_doc_score})")
+        reasons.append(f"พบคลังข้อมูลหน้าเว็บและระเบียบการตรงจุดสูงมาก ได้คะแนน {top_doc_score}")
     elif top_doc_score >= 10:
         confidence_score += 14
-        reasons.append(f"พบเอกสารที่เกี่ยวข้องในระบบ (คะแนน {top_doc_score})")
+        reasons.append(f"พบเอกสารที่เกี่ยวข้องในระบบ ได้คะแนน {top_doc_score}")
     elif top_doc_score > 0:
         confidence_score += 8
-        reasons.append(f"พบเอกสารที่มีคำค้นบางส่วน (คะแนน {top_doc_score})")
+        reasons.append(f"พบเอกสารที่มีคำค้นบางส่วน ได้คะแนน {top_doc_score}")
 
     if detected_majors:
         confidence_score += 10
@@ -1372,19 +1737,19 @@ def compute_rag_debug_info(user_message, bot_text, good_files, good_links,
 
     if is_all_programs_q:
         confidence_score += 10
-        reasons.append("ตรวจพบคำถามภาพรวมหลักสูตร/สาขาวิชา และดึงข้อมูลหลักสูตรทั้งหมดของคณะโดยตรง")
+        reasons.append("ตรวจพบคำถามภาพรวมหลักสูตรและสาขาวิชา จึงดึงข้อมูลหลักสูตรทั้งหมดของคณะโดยตรง")
 
     if is_fallback:
         confidence_score -= 30
-        reasons.append("ไม่พบเอกสารตรงเป้า ระบบจำเป็นต้องใช้เอกสารภาพรวมสำรอง")
+        reasons.append("ไม่พบเอกสารที่เกี่ยวข้องกับคำถามในคลังข้อมูล")
     elif is_overview:
         reasons.append("คำถามภาพรวมทั่วไป")
 
-    combined_ctx = (context_str or "") + " " + (faq_str or "")
+    combined_ctx = _build_verification_context(context_str, faq_str, thai_now=get_thai_now_str())
     faith_res = evaluate_faithfulness(bot_text, combined_ctx)
     if faith_res["unsupported_facts"]:
         confidence_score -= 20
-        reasons.append(f"ตรวจพบข้อมูลหรือสถานที่ {len(faith_res['unsupported_facts'])} จุดที่ไม่ปรากฏในเอกสารอ้างอิง ({', '.join(faith_res['unsupported_facts'])})")
+        reasons.append(f"ตรวจพบข้อมูลหรือสถานที่ {len(faith_res['unsupported_facts'])} จุดที่ไม่ปรากฏในเอกสารอ้างอิง ได้แก่ {', '.join(faith_res['unsupported_facts'])}")
     elif faith_res["grounded_facts"]:
         confidence_score += 10
         reasons.append("ข้อมูลและเงื่อนไขสำคัญในคำตอบ มีหลักฐานยืนยันในเอกสารอ้างอิงครบถ้วน")
@@ -1398,7 +1763,12 @@ def compute_rag_debug_info(user_message, bot_text, good_files, good_links,
     else:
         confidence_level = "LOW"
 
-    if faq_actually_cited and top_faq_score >= 10 and top_faq_score >= top_doc_score:
+    if is_intercepted:
+        confidence_score = 30
+        confidence_level = "LOW"
+        route = "guardrail_intercepted"
+        reasons.insert(0, "คำตอบเดิมถูกสกัดกั้นเนื่องจากพบข้อมูลที่ไม่มีในคลังเอกสารอ้างอิง และถูกแทนที่ด้วยข้อความทางการ")
+    elif faq_actually_cited and top_faq_score >= 10 and top_faq_score >= top_doc_score:
         route = "faq_grounded"
     elif is_fallback:
         route = "no_context_fallback"
@@ -1421,8 +1791,8 @@ def compute_rag_debug_info(user_message, bot_text, good_files, good_links,
     is_faq_enabled = (get_setting("faq_enabled", "true") == "true")
     if is_faq_enabled and scored_faq:
         top_faq_sc = scored_faq[0][0]
-        # แสดงเฉพาะ FAQ ที่ผ่านเกณฑ์ 60% และส่งให้ AI อ่านจริงเท่านั้น ป้องกันไม่ให้แชทขยะติดมาในหน้าจอ
-        actual_faqs = [(sc, e) for sc, _, e in scored_faq if sc >= max(12, top_faq_sc * 0.6)][:3]
+        # แสดงเฉพาะ FAQ ที่ผ่านเกณฑ์ 60% และเกณฑ์ขั้นต่ำเดียวกับ _perform_retrieval
+        actual_faqs = [(sc, e) for sc, _, e in scored_faq if sc >= max(10.0, top_faq_sc * 0.6)][:3]
         for sc, e in actual_faqs:
             ans_raw = e.get("a", "")
             faq_data.append({
@@ -1444,8 +1814,9 @@ def compute_rag_debug_info(user_message, bot_text, good_files, good_links,
         "suggested_files": good_files or [],
         "suggested_links": good_links or [],
         "model": os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite"),
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": utc_now().isoformat(),
         "is_reconstructed": False,
+        "is_intercepted": is_intercepted,
     }
 
 def generate_chat_debug_analysis(user_message, bot_answer=None):
@@ -1475,7 +1846,7 @@ def generate_chat_debug_analysis(user_message, bot_answer=None):
             "suggested_files": [],
             "suggested_links": [],
             "model": "system_guard",
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": utc_now().isoformat(),
             "is_reconstructed": True,
         }
 
@@ -1499,7 +1870,7 @@ def generate_chat_debug_analysis(user_message, bot_answer=None):
             "suggested_files": [],
             "suggested_links": [],
             "model": "system_guard",
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": utc_now().isoformat(),
             "is_reconstructed": True,
         }
 
@@ -1522,6 +1893,24 @@ def generate_chat_debug_analysis(user_message, bot_answer=None):
     )
     debug_data["is_reconstructed"] = True
     return debug_data
+
+_TH_DAYS = ("จันทร์", "อังคาร", "พุธ", "พฤหัสบดี", "ศุกร์", "เสาร์", "อาทิตย์")
+_TH_MONTHS = ("มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
+              "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม")
+
+def get_thai_now_str():
+    """ส่งคืนวันเวลาไทยปัจจุบัน UTC+7 สำหรับแนบใน System Context (คำนวณสดเสมอ รองรับทั้ง Render และเครื่องมหาลัย)"""
+    from datetime import timedelta
+    n = utc_now() + timedelta(hours=7)
+    return f"วัน{_TH_DAYS[n.weekday()]}ที่ {n.day} {_TH_MONTHS[n.month-1]} พ.ศ. {n.year + 543} เวลา {n:%H:%M} น."
+
+_INJECTION_PATTERNS = re.compile(
+    r"system\s*(prompt|instruction|message)|คำสั่งตั้งต้น|คำสั่งระบบ|พรอมต์|พร้อมท์|prompt\s*ของ"
+    r"|ignore\s+(all\s+)?(previous|above)|ลืมคำสั่ง|ลืมกฎ|ยกเลิกคำสั่ง"
+    r"|(ลิสต์|แสดง|เปิดเผย|บอก|สรุป)\s*(คำสั่ง|กฎ|ข้อจำกัด)(ที่|ของ)?\s*(คุณ|ระบบ|บอท)"
+    r"|ได้รับคำสั่ง.{0,30}(โทน|ข้อจำกัด)",
+    re.I
+)
 
 def ask_gemini(user_message, history=None, return_debug=False):
     msg_lower = user_message.lower()
@@ -1593,8 +1982,14 @@ def ask_gemini(user_message, history=None, return_debug=False):
     )
     if not is_curriculum_query and (msg_clean in _model_exact or (len(msg_clean) <= 60 and any(p in msg_nospace for p in _model_phrases))):
         resp = (
-            "ผมคือ Science Assistant ระบบผู้ช่วยอัจฉริยะของคณะวิทยาศาสตร์ ศรีราชา มหาวิทยาลัยเกษตรศาสตร์ "
-            "พัฒนาขึ้นเพื่อช่วยตอบคำถามเกี่ยวกับหลักสูตร การลงทะเบียน เอกสารคำร้อง และข้อมูลภายในคณะครับ "
+            "ผมคือ Science Assistant ผู้ช่วยอัจฉริยะของคณะวิทยาศาสตร์ ศรีราชา มหาวิทยาลัยเกษตรศาสตร์ วิทยาเขตศรีราชา ครับ\n\n"
+            "พร้อมให้ข้อมูลและช่วยเหลือใน 6 ด้านหลัก:\n"
+            "1. หลักสูตรและค่าธรรมเนียมการศึกษา (ทุกสาขาวิชา ทั้งปริญญาตรีและบัณฑิตศึกษา)\n"
+            "2. การรับสมัครเข้าศึกษา (เกณฑ์ TCAS และคุณสมบัติผู้สมัคร)\n"
+            "3. ตารางเรียน ตารางสอบ และปฏิทินการศึกษา\n"
+            "4. เอกสารและแบบฟอร์มคำร้องต่างๆ\n"
+            "5. ทุนการศึกษา การกู้ยืม กยศ. และการผ่อนผันค่าเทอม\n"
+            "6. ข้อมูลอาจารย์ประจำสาขาและช่องทางติดต่อคณะ\n\n"
             "พิมพ์เรื่องที่ต้องการสอบถามได้เลยครับ"
         )
         if return_debug:
@@ -1611,7 +2006,7 @@ def ask_gemini(user_message, history=None, return_debug=False):
                 "suggested_files": [],
                 "suggested_links": [],
                 "model": "system_guard",
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": utc_now().isoformat(),
                 "is_reconstructed": False,
             }
             return resp, [], [], dbg
@@ -1647,7 +2042,34 @@ def ask_gemini(user_message, history=None, return_debug=False):
                 "suggested_files": [],
                 "suggested_links": [],
                 "model": "system_guard",
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": utc_now().isoformat(),
+                "is_reconstructed": False,
+            }
+            return resp, [], [], dbg
+        return resp, [], []
+
+    # ── ชั้น 1 Input Guard: ตรวจจับและปฏิเสธเจตนาขอคำสั่งระบบ / Prompt Injection ทันที ──
+    if _INJECTION_PATTERNS.search(user_message):
+        resp = (
+            "ขออภัยครับ ไม่สามารถเปิดเผยการตั้งค่าภายในหรือคำสั่งระบบได้ครับ "
+            "หากมีคำถามเกี่ยวกับหลักสูตร การลงทะเบียน แบบฟอร์มคำร้อง หรือบริการของคณะวิทยาศาสตร์ ศรีราชา "
+            "สามารถสอบถามได้เลยครับ"
+        )
+        if return_debug:
+            dbg = {
+                "route": "direct_rule",
+                "confidence_score": 100,
+                "confidence_level": "HIGH",
+                "confidence_reasons": ["ตรวจพบความพยายามขอข้อมูลคำสั่งระบบ จึงปฏิเสธตามระบบป้องกัน"],
+                "faithfulness": {"status": "grounded", "score": 1.0, "grounded_facts": [], "unsupported_facts": []},
+                "retrieved_sources": [],
+                "matched_faq": [],
+                "detected_majors": [],
+                "extracted_keywords": [],
+                "suggested_files": [],
+                "suggested_links": [],
+                "model": "system_guard",
+                "timestamp": utc_now().isoformat(),
                 "is_reconstructed": False,
             }
             return resp, [], [], dbg
@@ -1665,7 +2087,10 @@ def ask_gemini(user_message, history=None, return_debug=False):
     faq_str = ret["faq_str"]
     is_all_programs_q = ret.get("is_all_programs_q", False)
 
+    thai_now = get_thai_now_str()
     system = f"""{prompt}
+
+[วันเวลาปัจจุบัน]: {thai_now}
 {context_str}{faq_str}
 ---
 รายชื่อไฟล์ PDF ที่มีในระบบ (ใช้ชื่อเหล่านี้เท่านั้น):
@@ -1686,41 +2111,98 @@ def ask_gemini(user_message, history=None, return_debug=False):
 - ถ้าไม่มีลิงค์ที่เกี่ยวข้องให้ใส่ []
 """
     messages = []
-    if history:
+    if isinstance(history, list):
         for h in history[-6:]:
-            messages.append({"role": h["role"], "parts": [{"text": h["parts"]}]})
-    messages.append({"role": "user", "parts": [{"text": user_message}]})
+            if isinstance(h, dict) and h.get("role") in ("user", "model"):
+                p_txt = h.get("parts")
+                if isinstance(p_txt, str) and p_txt.strip():
+                    messages.append(types.Content(role=h["role"], parts=[types.Part.from_text(text=p_txt.strip()[:2000])]))
+    messages.append(types.Content(role="user", parts=[types.Part.from_text(text=user_message)]))
 
     def _call_gemini(api_key):
-        genai.configure(api_key=api_key)
-        m = genai.GenerativeModel(
-            model_name=os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite"),
-            system_instruction=system,
-            generation_config={"response_mime_type": "application/json"}
+        client = _get_genai_client(api_key)
+        return client.models.generate_content(
+            model=os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite"),
+            contents=messages,
+            config=types.GenerateContentConfig(
+                system_instruction=system,
+                response_mime_type="application/json",
+                temperature=0.0,
+            ),
         )
-        return m.generate_content(messages)
 
-    # ลอง key แรกก่อน ถ้าพังสลับ key 2 และ key 3 อัตโนมัติ
-    try:
-        raw = _call_gemini(GEMINI_API_KEY)
-    except Exception as e1:
-        print(f"[Gemini] Key1 failed: {e1}")
-        if GEMINI_API_KEY2:
-            try:
-                print("[Gemini] Switching to Key2...")
-                raw = _call_gemini(GEMINI_API_KEY2)
-            except Exception as e2:
-                print(f"[Gemini] Key2 failed: {e2}")
-                if GEMINI_API_KEY3:
-                    print("[Gemini] Switching to Key3...")
-                    raw = _call_gemini(GEMINI_API_KEY3)
+    # รวบรวมรายการ API Keys ที่กำหนดค่าไว้
+    configured_keys = [
+        ("Key1", GEMINI_API_KEY),
+        ("Key2", GEMINI_API_KEY2),
+        ("Key3", GEMINI_API_KEY3),
+    ]
+    valid_keys = [(label, k) for label, k in configured_keys if k]
+    if not valid_keys:
+        err_msg = "ขออภัยค่ะ ระบบยังไม่ได้ตั้งค่า API Key กรุณาติดต่อผู้ดูแลระบบ"
+        if return_debug:
+            return err_msg, [], [], _build_system_debug_info(
+                "system_error", "ไม่พบ Gemini API Key ในระบบ", kw=kw, detected_majors=detected_majors
+            )
+        return err_msg, [], []
+
+    now_ts = time.time()
+    ready_keys = [item for item in valid_keys if now_ts >= _KEY_COOLDOWNS.get(item[1], 0)]
+    cooling_keys = [item for item in valid_keys if now_ts < _KEY_COOLDOWNS.get(item[1], 0)]
+    cooling_keys.sort(key=lambda item: _KEY_COOLDOWNS.get(item[1], 0))
+
+    # ลำดับที่จะเรียก: เลือกคีย์ที่พร้อมก่อน หากทุกคีย์ติด Cooldown ให้ลองคีย์ที่ใกล้พ้นโทษที่สุด
+    attempt_order = ready_keys if ready_keys else cooling_keys
+
+    raw = None
+    last_err = None
+    for label, key in attempt_order:
+        try:
+            raw = _call_gemini(key)
+            # สำเร็จ: ปลดสถานะ cooldown ของคีย์นี้ออกทันที
+            _KEY_COOLDOWNS.pop(key, None)
+            break
+        except Exception as exc:
+            last_err = exc
+            err_str = str(exc)
+            is_rate_limit = any(indicator in err_str.lower() for indicator in ("429", "quota", "resourceexhausted", "rate limit"))
+            if is_rate_limit:
+                delay = 30.0
+                match = re.search(r'retry in\s+([\d\.]+)\s*s', err_str, re.I)
+                if match:
+                    try:
+                        delay = float(match.group(1)) + 1.0
+                    except (ValueError, TypeError):
+                        delay = 30.0
                 else:
-                    raise e2
-        else:
-            raise e1
+                    match_sec = re.search(r'seconds:\s*(\d+)', err_str, re.I)
+                    if match_sec:
+                        try:
+                            delay = float(match_sec.group(1)) + 1.0
+                        except (ValueError, TypeError):
+                            delay = 30.0
+                _KEY_COOLDOWNS[key] = time.time() + delay
+                print(f"[Gemini] {label} hit 429/Quota limit. Cooldown set for {delay:.1f}s.")
+            else:
+                print(f"[Gemini] {label} failed: {exc}")
+
+    if raw is None:
+        if last_err:
+            raise last_err
+        err_msg = "ขออภัยค่ะ ระบบไม่สามารถตอบได้ในขณะนี้ กรุณาลองใหม่อีกครั้ง"
+        if return_debug:
+            return err_msg, [], [], _build_system_debug_info(
+                "system_error", "Gemini API ไม่ส่งคืนผลลัพธ์", kw=kw, detected_majors=detected_majors
+            )
+        return err_msg, [], []
     raw_text = (raw.text or "").strip()
     if not raw_text:
-        return "ขออภัยค่ะ ระบบไม่สามารถตอบได้ในขณะนี้ กรุณาลองใหม่อีกครั้ง", [], []
+        err_msg = "ขออภัยค่ะ ระบบไม่สามารถตอบได้ในขณะนี้ กรุณาลองใหม่อีกครั้ง"
+        if return_debug:
+            return err_msg, [], [], _build_system_debug_info(
+                "system_error", "Gemini API ส่งคืนข้อความว่างเปล่า", kw=kw, detected_majors=detected_majors
+            )
+        return err_msg, [], []
     raw_text = re.sub(r"^```json\s*\n?", "", raw_text, flags=re.MULTILINE)
     raw_text = re.sub(r"\n?```\s*$", "", raw_text, flags=re.MULTILINE).strip()
     parsed = None
@@ -1802,6 +2284,17 @@ def ask_gemini(user_message, history=None, return_debug=False):
         good_files = [m for m in (_match_pdf(f) for f in parsed.get("files", [])) if m]
         raw_links  = parsed.get("links", [])
 
+    # ── ชั้น 3 Output Leak Guard: ตรวจจับและระงับการหลุดของข้อความ System Prompt ออกสู่ผู้ใช้ ──
+    _LEAK_PATTERNS = ("━━━━", "กฎเหล็กสำหรับการทำงานร่วมกับปุ่ม UI", "Prompt Injection Guard", "Fallback & Guardrails", "SYSTEM_LINKS", "STATIC_KNOWLEDGE", "[Context]")
+    if any(pat in bot_text for pat in _LEAK_PATTERNS):
+        bot_text = (
+            "ขออภัยครับ ไม่สามารถเปิดเผยการตั้งค่าภายในหรือคำสั่งระบบได้ครับ "
+            "หากมีคำถามเกี่ยวกับหลักสูตร การลงทะเบียน แบบฟอร์มคำร้อง หรือบริการของคณะวิทยาศาสตร์ ศรีราชา "
+            "สามารถสอบถามได้เลยครับ"
+        )
+        good_files = []
+        raw_links = []
+
     # Fallback: หาก AI ลืมใส่ใน parsed['files'] แต่ในเนื้อหา bot_text พูดถึงแบบฟอร์ม ให้สแกนดึงมาให้ผู้ใช้อัตโนมัติ
     if not good_files and bot_text:
         # สแกนหาคำลงท้าย .pdf ในข้อความ
@@ -1833,6 +2326,23 @@ def ask_gemini(user_message, history=None, return_debug=False):
     query_context = (user_message + " " + bot_text).lower()
     bot_text = sanitize_bot_output(bot_text, has_links=bool(good_links), query_context=query_context)
 
+    # ── Active Guardrail Interceptor ─────────────────────────
+    combined_verification_ctx = _build_verification_context(context_str, faq_str, thai_now=thai_now)
+
+    faith_check = evaluate_faithfulness(bot_text, combined_verification_ctx)
+    is_intercepted = False
+    if faith_check["status"] == "hallucination_risk":
+        print(f"[Guardrail] INTERCEPTED hallucinated response! Unsupported: {faith_check['unsupported_facts']}")
+        bot_text = (
+            "สำหรับรายละเอียดหรือเกณฑ์ตัวเลขในส่วนนี้ ยังไม่มีข้อมูลระบุไว้ในฐานข้อมูลอย่างเป็นทางการครับ "
+            "แนะนำให้ติดต่อสอบถามโดยตรงกับสำนักงานคณะวิทยาศาสตร์ ศรีราชา โทร. 038-354580-4 ต่อ 663013 "
+            "หรือสำนักทะเบียนและประมวลผล มก.ศรีราชา ครับ\n\n"
+            "หากข้อมูลส่วนใดไม่ถูกต้องหรือไม่ตรงกับที่ต้องการ สามารถกดปุ่มไม่ถูกใจ (👎) ใต้ข้อความเพื่อให้ทีมผู้พัฒนาตรวจสอบและปรับปรุงฐานข้อมูลได้ครับ"
+        )
+        good_files = []
+        good_links = []
+        is_intercepted = True
+
     if return_debug:
         debug_info = compute_rag_debug_info(
             user_message=user_message,
@@ -1846,9 +2356,10 @@ def ask_gemini(user_message, history=None, return_debug=False):
             kw=kw,
             is_fallback=is_fallback,
             is_overview=is_overview,
-            context_str=context_str,
+            context_str=f"[วันเวลาปัจจุบัน]: {thai_now}\n\n" + context_str,
             faq_str=faq_str,
-            is_all_programs_q=is_all_programs_q
+            is_all_programs_q=is_all_programs_q,
+            is_intercepted=is_intercepted
         )
         return bot_text, good_files, good_links, debug_info
 
@@ -1921,10 +2432,21 @@ def login_page():
 def guest_login():
     if get_setting("guest_mode", "true") != "true":
         return redirect(url_for("login_page"))
+    today_th = _get_thai_date_str()
+    existing_id = str(flask_session.get("line_user_id", ""))
+    if flask_session.get("is_guest") and existing_id.startswith("guest_"):
+        if flask_session.get("guest_quota_date") != today_th:
+            flask_session["guest_question_count"] = 0
+            flask_session["guest_quota_date"] = today_th
+        else:
+            flask_session.setdefault("guest_question_count", 0)
+        flask_session.permanent = True
+        return redirect(url_for("index"))
     guest_id = f"guest_{secrets.token_hex(6)}"
     flask_session.permanent = True
     flask_session["is_guest"] = True
     flask_session["guest_question_count"] = 0
+    flask_session["guest_quota_date"] = today_th
     flask_session["line_user_id"] = guest_id
     flask_session["line_display_name"] = "ทดลองใช้งาน (Guest)"
     flask_session["line_picture"] = "/static/img/guest_avatar.png"
@@ -1992,7 +2514,7 @@ def line_callback():
         )
         db.session.add(user)
     else:
-        user.last_login   = datetime.utcnow()
+        user.last_login   = utc_now()
         user.display_name = profile.get("displayName")
         user.picture_url  = profile.get("pictureUrl")
         user.login_count  = (user.login_count or 1) + 1
@@ -2064,17 +2586,34 @@ def api_top_questions():
 _chat_rate_buckets = {}   # session_key -> [timestamps ภายใน 60 วินาทีล่าสุด]
 _CHAT_RATE_LIMIT = 10     # สูงสุด 10 ข้อความต่อนาทีต่อคน (ป้องกันชนเพดาน Gemini 15 RPM)
 _CHAT_RATE_WINDOW = 60
+_RATE_LIMIT_LOCK = threading.Lock()
+
+def _prune_sliding_window(buckets: dict, key: str, window: int, max_keys: int = 2000) -> list:
+    """คัดกรอง timestamp ในหน้าต่างเวลา และล้างคีย์หมดอายุเพื่อคุมหน่วยความจำ"""
+    now = time.time()
+    if len(buckets) > max_keys:
+        expired = [k for k, ts in list(buckets.items()) if not ts or (now - ts[-1]) >= window]
+        for k in expired:
+            buckets.pop(k, None)
+    return [t for t in buckets.get(key, []) if now - t < window]
+
+def _check_sliding_bucket(buckets: dict, key: str, limit: int, window: int) -> bool:
+    """ตรวจสอบและบันทึกความถี่แบบ Sliding Window ภายใต้ Lock"""
+    with _RATE_LIMIT_LOCK:
+        timestamps = _prune_sliding_window(buckets, key, window)
+        if len(timestamps) >= limit:
+            if timestamps:
+                buckets[key] = timestamps
+            else:
+                buckets.pop(key, None)
+            return False
+        timestamps.append(time.time())
+        buckets[key] = timestamps
+        return True
 
 def _check_chat_rate_limit(session_key: str) -> bool:
     """ตรวจสอบความถี่การส่งแชทใน RAM (True = ผ่าน, False = ส่งถี่เกินไป)"""
-    now = time.time()
-    timestamps = [t for t in _chat_rate_buckets.get(session_key, []) if now - t < _CHAT_RATE_WINDOW]
-    if len(timestamps) >= _CHAT_RATE_LIMIT:
-        _chat_rate_buckets[session_key] = timestamps
-        return False
-    timestamps.append(now)
-    _chat_rate_buckets[session_key] = timestamps
-    return True
+    return _check_sliding_bucket(_chat_rate_buckets, session_key, _CHAT_RATE_LIMIT, _CHAT_RATE_WINDOW)
 
 # ──────────────────────────────────────────
 # Routes — ต้อง login LINE
@@ -2092,7 +2631,7 @@ def chat():
     data = request.get_json(silent=True)
     if not data or "message" not in data:
         return jsonify({"response": "ขออภัยครับ ข้อมูลไม่ถูกต้อง", "suggested_files": []}), 400
-    if not GEMINI_API_KEY:
+    if not any([GEMINI_API_KEY, GEMINI_API_KEY2, GEMINI_API_KEY3]):
         return jsonify({"response": "ขออภัยครับ ระบบยังไม่พร้อมใช้งาน กรุณาติดต่อผู้ดูแลระบบ", "suggested_files": []})
 
     is_guest = bool(flask_session.get("is_guest"))
@@ -2110,14 +2649,18 @@ def chat():
     if not _check_chat_rate_limit(rate_key):
         return jsonify({"response": "ขออภัยครับ คุณส่งข้อความถี่เกินไป กรุณารอสักครู่แล้วลองใหม่ครับ", "suggested_files": []})
 
-    # ── ตรวจสอบโควตาสำหรับโหมดทดลองใช้งาน (Guest Mode: จำกัด 5 ข้อ) ──
+    # ── ตรวจสอบโควตาสำหรับโหมดทดลองใช้งาน (Guest Mode: จำกัด 5 ข้อ/วัน) ──
     is_guest = bool(flask_session.get("is_guest"))
     GUEST_MAX_QUESTIONS = 5
     if is_guest:
+        today_th = _get_thai_date_str()
+        if flask_session.get("guest_quota_date") != today_th:
+            flask_session["guest_question_count"] = 0
+            flask_session["guest_quota_date"] = today_th
         guest_count = flask_session.get("guest_question_count", 0)
         if guest_count >= GUEST_MAX_QUESTIONS:
             return jsonify({
-                "response": "คุณใช้สิทธิ์ทดลองใช้งานครบ 5 คำถามแล้วครับ หากต้องการพูดคุยต่อ กรุณาเข้าสู่ระบบผ่าน LINE ได้เลยครับ",
+                "response": "คุณใช้สิทธิ์ทดลองใช้งานครบ 5 คำถามวันนี้แล้วครับ หากต้องการพูดคุยต่อ กรุณาเข้าสู่ระบบผ่าน LINE ได้เลยครับ",
                 "suggested_files": [],
                 "suggested_links": [],
                 "is_guest": True,
@@ -2135,6 +2678,8 @@ def chat():
         return jsonify({"response": "ขออภัยครับ ข้อความยาวเกินไป กรุณาพิมพ์คำถามให้สั้นลงครับ", "suggested_files": []})
 
     history = data.get("history", [])
+    if not isinstance(history, list):
+        history = []
     try:
         bot_text, files, links, debug_data = ask_gemini(user_msg, history=history, return_debug=True)
         print(f"[DEBUG] suggested_files={files} | ALL_PDFS_count={len(ALL_PDFS)}")
@@ -2142,12 +2687,13 @@ def chat():
         if is_guest:
             guest_count = flask_session.get("guest_question_count", 0) + 1
             flask_session["guest_question_count"] = guest_count
+            flask_session["guest_quota_date"] = _get_thai_date_str()
             remaining_quota = max(0, GUEST_MAX_QUESTIONS - guest_count)
-            quota_exhausted = (guest_count >= GUEST_MAX_QUESTIONS)
+            quota_max = (guest_count >= GUEST_MAX_QUESTIONS)
         else:
             guest_count = 0
             remaining_quota = None
-            quota_exhausted = False
+            quota_max = False
 
         log = None
         try:
@@ -2161,6 +2707,11 @@ def chat():
             )
             db.session.add(log)
             db.session.commit()
+            if log.id:
+                owned_ids = list(flask_session.get("owned_log_ids") or [])
+                if log.id not in owned_ids:
+                    owned_ids.append(log.id)
+                    flask_session["owned_log_ids"] = owned_ids[-50:]
             invalidate_stats_cache()
         except Exception as db_err:
             print(f"[ChatLog] Save error: {db_err}")
@@ -2174,8 +2725,8 @@ def chat():
             "is_guest": is_guest,
             "guest_count": guest_count,
             "remaining_quota": remaining_quota,
-            "quota_exceeded": quota_exhausted,
-            "login_url": (url_for("line_login") if LINE_CLIENT_ID else url_for("login_page")) if quota_exhausted else None
+            "quota_exceeded": quota_max,
+            "login_url": (url_for("line_login") if LINE_CLIENT_ID else url_for("login_page")) if quota_max else None
         })
     except Exception as e:
         print(f"[Chat Error] {e}")
@@ -2185,21 +2736,17 @@ def chat():
 @login_required
 def downloads():
     docs = []
-    if os.path.exists(PDF_DIR):
-        for i, fn in enumerate(sorted(os.listdir(PDF_DIR)), 1):
-            if fn.endswith(".pdf"):
-                fp = os.path.join(PDF_DIR, fn)
-                size_kb = round(os.path.getsize(fp) / 1024, 1) if os.path.exists(fp) else 0
-                size_str = f"{size_kb} KB" if size_kb < 1024 else f"{round(size_kb / 1024, 2)} MB"
-                clean_title = re.sub(r'\.pdf$', '', fn, flags=re.I)
-                clean_title = re.sub(r'[-_]?(?:revised|revision)', '', clean_title, flags=re.I).strip()
-                docs.append({
-                    "id": i,
-                    "filename": fn,
-                    "title": clean_title,
-                    "category": get_pdf_category(fn),
-                    "size_str": size_str,
-                })
+    for i, (doc_dir, fn, title, cat) in enumerate(_list_downloadable_pdfs(), 1):
+        fp = os.path.join(doc_dir, fn)
+        size_kb = round(os.path.getsize(fp) / 1024, 1) if os.path.exists(fp) else 0
+        size_str = f"{size_kb} KB" if size_kb < 1024 else f"{round(size_kb / 1024, 2)} MB"
+        docs.append({
+            "id": i,
+            "filename": fn,
+            "title": title,
+            "category": cat,
+            "size_str": size_str,
+        })
     cats = {}
     for d in docs:
         cats.setdefault(d["category"], []).append(d)
@@ -2208,11 +2755,12 @@ def downloads():
 @app.route("/download/<int:doc_id>")
 @login_required
 def download_file(doc_id):
-    pdfs = sorted([f for f in os.listdir(PDF_DIR) if f.endswith(".pdf")]) if os.path.exists(PDF_DIR) else []
-    if doc_id < 1 or doc_id > len(pdfs):
+    items = _list_downloadable_pdfs()
+    if doc_id < 1 or doc_id > len(items):
         return "File not found", 404
+    doc_dir, fn, _, _ = items[doc_id - 1]
     as_attachment = (request.args.get("view") != "1")
-    return send_from_directory(PDF_DIR, pdfs[doc_id - 1], as_attachment=as_attachment)
+    return send_from_directory(doc_dir, fn, as_attachment=as_attachment)
 
 @app.route("/api/documents/search", methods=["GET", "POST"])
 @login_required
@@ -2224,23 +2772,18 @@ def api_documents_search():
         keyword = request.args.get("q", "").strip().lower()
 
     docs = []
-    if os.path.exists(PDF_DIR):
-        for i, fn in enumerate(sorted(os.listdir(PDF_DIR)), 1):
-            if fn.endswith(".pdf"):
-                cat = get_pdf_category(fn)
-                clean_title = re.sub(r'\.pdf$', '', fn, flags=re.I)
-                clean_title = re.sub(r'[-_]?(?:revised|revision)', '', clean_title, flags=re.I).strip()
-                if not keyword or keyword in fn.lower() or keyword in cat.lower() or keyword in clean_title.lower():
-                    fp = os.path.join(PDF_DIR, fn)
-                    size_kb = round(os.path.getsize(fp) / 1024, 1) if os.path.exists(fp) else 0
-                    size_str = f"{size_kb} KB" if size_kb < 1024 else f"{round(size_kb / 1024, 2)} MB"
-                    docs.append({
-                        "id": i,
-                        "filename": fn,
-                        "title": clean_title,
-                        "category": cat,
-                        "size": size_str,
-                    })
+    for i, (doc_dir, fn, title, cat) in enumerate(_list_downloadable_pdfs(), 1):
+        if not keyword or keyword in fn.lower() or keyword in cat.lower() or keyword in title.lower():
+            fp = os.path.join(doc_dir, fn)
+            size_kb = round(os.path.getsize(fp) / 1024, 1) if os.path.exists(fp) else 0
+            size_str = f"{size_kb} KB" if size_kb < 1024 else f"{round(size_kb / 1024, 2)} MB"
+            docs.append({
+                "id": i,
+                "filename": fn,
+                "title": title,
+                "category": cat,
+                "size": size_str,
+            })
     return jsonify(docs)
 
 @app.route("/api/documents")
@@ -2249,11 +2792,10 @@ def api_documents():
     global _DOCUMENTS_CACHE
     if _DOCUMENTS_CACHE is not None:
         return jsonify(_DOCUMENTS_CACHE)
-    docs = []
-    if os.path.exists(PDF_DIR):
-        for fn in sorted(os.listdir(PDF_DIR)):
-            if fn.endswith(".pdf"):
-                docs.append({"id": len(docs)+1, "name": fn, "category": get_pdf_category(fn)})
+    docs = [
+        {"id": i, "name": fn, "category": cat}
+        for i, (_, fn, _, cat) in enumerate(_list_downloadable_pdfs(), 1)
+    ]
     _DOCUMENTS_CACHE = docs
     return jsonify(docs)
 
@@ -2265,9 +2807,18 @@ def save_feedback():
     score  = data.get("score")
     if not log_id or score not in (1, -1):
         return jsonify({"error": "invalid"}), 400
-    log = ChatLog.query.get(log_id)
+    log = db.session.get(ChatLog, log_id)
     if not log:
         return jsonify({"error": "not found"}), 404
+    is_admin = bool(flask_session.get("admin_logged_in"))
+    current_db_user_id = flask_session.get("db_user_id")
+    owned_ids = flask_session.get("owned_log_ids") or []
+    if not (
+        is_admin
+        or (current_db_user_id is not None and log.user_id == current_db_user_id)
+        or (log.id in owned_ids)
+    ):
+        return jsonify({"error": "forbidden"}), 403
     log.feedback = score
     db.session.commit()
     invalidate_stats_cache()
@@ -2279,7 +2830,7 @@ def save_feedback():
 @app.route("/api/admin/chatlogs/<int:log_id>/debug")
 @admin_required
 def api_chatlog_debug(log_id):
-    log = ChatLog.query.get_or_404(log_id)
+    log = db.get_or_404(ChatLog, log_id)
     if log.debug_info:
         try:
             data = json.loads(log.debug_info)
@@ -2339,16 +2890,17 @@ _LOGIN_MAX_TRIES = 5
 _LOGIN_WINDOW    = 300    # 5 นาที
 
 def _client_ip():
-    if os.getenv("RENDER") or os.getenv("DYNO"):
-        return request.remote_addr or "unknown"
-    fwd = request.headers.get("X-Forwarded-For", "")
-    return fwd.split(",")[-1].strip() if fwd else (request.remote_addr or "unknown")
+    # ยึด request.remote_addr เพื่อกันการปลอม X-Forwarded-For (บน Render ใช้ ProxyFix อัปเดตให้แล้ว)
+    return request.remote_addr or "unknown"
 
 def _login_blocked(ip):
-    now   = time.time()
-    tries = [t for t in _login_attempts.get(ip, []) if now - t < _LOGIN_WINDOW]
-    _login_attempts[ip] = tries
-    return len(tries) >= _LOGIN_MAX_TRIES
+    with _RATE_LIMIT_LOCK:
+        tries = _prune_sliding_window(_login_attempts, ip, _LOGIN_WINDOW)
+        if tries:
+            _login_attempts[ip] = tries
+        else:
+            _login_attempts.pop(ip, None)
+        return len(tries) >= _LOGIN_MAX_TRIES
 
 @app.route("/admin/login", methods=["POST"])
 def admin_auth():
@@ -2364,11 +2916,14 @@ def admin_auth():
     ok = (hmac.compare_digest(username.encode("utf-8"), ADMIN_USERNAME.encode("utf-8"))
           and hmac.compare_digest(password.encode("utf-8"), ADMIN_PASSWORD.encode("utf-8")))
     if ok:
-        _login_attempts.pop(ip, None)   # ล้างประวัติเมื่อล็อกอินสำเร็จ
+        with _RATE_LIMIT_LOCK:
+            _login_attempts.pop(ip, None)   # ล้างประวัติเมื่อล็อกอินสำเร็จ
         flask_session["admin_logged_in"] = True
+        flask_session["_csrf_token"] = secrets.token_urlsafe(32)
         flask_session.permanent = False
         return redirect(url_for("dashboard"))
-    _login_attempts.setdefault(ip, []).append(time.time())
+    with _RATE_LIMIT_LOCK:
+        _login_attempts.setdefault(ip, []).append(time.time())
     return render_template("admin_login.html", error="ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง")
 
 @app.route("/admin/logout")
@@ -2401,7 +2956,7 @@ def api_admin_stats():
         from sqlalchemy import func, case
         from datetime import timedelta
         from collections import Counter
-        thai_now = datetime.utcnow() + timedelta(hours=7)
+        thai_now = utc_now() + timedelta(hours=7)
         thai_today = thai_now.date()
         today_start_utc = datetime(thai_today.year, thai_today.month, thai_today.day) - timedelta(hours=7)
         seven_days_start_utc = today_start_utc - timedelta(days=6)
@@ -2543,6 +3098,13 @@ def api_chatlogs():
         "current_page": page,
     })
 
+def _sanitize_csv_cell(val) -> str:
+    """ป้องกัน CSV Formula Injection (Excel/Sheets) เมื่อข้อความขึ้นต้นด้วยอักขระสูตร"""
+    s = "" if val is None else str(val)
+    if s.lstrip().startswith(("=", "+", "-", "@")) or s.startswith(("\t", "\r")):
+        return "'" + s
+    return s
+
 @app.route("/api/admin/chatlogs/export")
 @admin_required
 def export_chatlogs():
@@ -2553,15 +3115,14 @@ def export_chatlogs():
     writer.writerow(["ID", "Timestamp", "Session ID", "User Type", "User Message", "Bot Answer"])
     for l in logs:
         user_type = "Guest" if getattr(l, "is_guest", False) else "LINE User"
-        writer.writerow([l.id, to_thai_time(l.timestamp),
-                         l.session_id or "", user_type, l.user_message, l.bot_answer])
-    output.seek(0)
-    from flask import Response
-    return Response(
-        "\ufeff" + output.getvalue(),
-        mimetype="text/csv",
-        headers={"Content-Disposition": "attachment; filename=chat_logs.csv"}
-    )
+        writer.writerow([
+            l.id,
+            _sanitize_csv_cell(to_thai_time(l.timestamp)),
+            _sanitize_csv_cell(l.session_id or ""),
+            _sanitize_csv_cell(user_type),
+            _sanitize_csv_cell(l.user_message),
+            _sanitize_csv_cell(l.bot_answer),
+        ])
     output.seek(0)
     from flask import Response
     return Response(
@@ -2603,7 +3164,7 @@ def api_faq_create():
 @app.route("/api/admin/faq/<int:faq_id>", methods=["PUT"])
 @admin_required
 def api_faq_update(faq_id):
-    faq = FAQ.query.get_or_404(faq_id)
+    faq = db.get_or_404(FAQ, faq_id)
     data = request.get_json(silent=True) or {}
     q = (data.get("question") or "").strip()
     a = (data.get("answer") or "").strip()
@@ -2611,7 +3172,7 @@ def api_faq_update(faq_id):
         return jsonify({"error": "กรุณาใส่คำถามและคำตอบ"}), 400
     faq.question = q
     faq.answer   = a
-    faq.updated_at = datetime.utcnow()
+    faq.updated_at = utc_now()
     db.session.commit()
     load_faq_from_db()
     return jsonify({"id": faq.id, "question": faq.question, "answer": faq.answer})
@@ -2619,7 +3180,7 @@ def api_faq_update(faq_id):
 @app.route("/api/admin/faq/<int:faq_id>", methods=["DELETE"])
 @admin_required
 def api_faq_delete(faq_id):
-    faq = FAQ.query.get_or_404(faq_id)
+    faq = db.get_or_404(FAQ, faq_id)
     db.session.delete(faq)
     db.session.commit()
     load_faq_from_db()
@@ -2697,7 +3258,7 @@ def scrape_status():
 def export_knowledge():
     pages = ScrapedPage.query.order_by(ScrapedPage.id.asc()).all()
     payload = {
-        "exported_at": datetime.utcnow().isoformat(),
+        "exported_at": utc_now().isoformat(),
         "count": len(pages),
         "pages": [{
             "url": p.url,
@@ -2765,14 +3326,14 @@ def import_knowledge():
         if existing:
             existing.content = content
             existing.category = category
-            existing.last_scraped = datetime.utcnow()
+            existing.last_scraped = utc_now()
             updated += 1
         else:
             db.session.add(ScrapedPage(
                 url=url,
                 category=category,
                 content=content,
-                last_scraped=datetime.utcnow()
+                last_scraped=utc_now()
             ))
             imported += 1
 
@@ -2783,8 +3344,8 @@ def import_knowledge():
             trigger="import_backup",
             pages=total_affected,
             status="done",
-            started_at=datetime.utcnow(),
-            finished_at=datetime.utcnow()
+            started_at=utc_now(),
+            finished_at=utc_now()
         )
         db.session.add(log)
         db.session.commit()
@@ -2917,7 +3478,7 @@ def api_admin_update_discovered_link(link_id):
     new_mapped = bool(is_mapped)
     if new_mapped:
         if not link.is_system_mapped or not getattr(link, "mapped_at", None):
-            link.mapped_at = datetime.utcnow()
+            link.mapped_at = utc_now()
     else:
         link.mapped_at = None
     link.is_system_mapped = new_mapped
@@ -2978,7 +3539,7 @@ def api_admin_bulk_discovered_links():
             l.is_system_mapped = True
             l.is_ignored = False
             if not getattr(l, 'mapped_at', None):
-                l.mapped_at = datetime.utcnow()
+                l.mapped_at = utc_now()
         msg = f"เปิดใช้งาน {count} รายการสำเร็จ"
     elif action == "ignore":
         for l in links:
@@ -3074,7 +3635,7 @@ def api_admin_discovered_links_auto_verify():
         activated_count = 0
         dead_count = 0
         skipped_count = 0
-        now = datetime.utcnow()
+        now = utc_now()
 
         for l in unmapped_links:
             alive, code = status_map.get(l.id, (False, 0))
@@ -3129,7 +3690,7 @@ def seed_initial_scraped_pages():
                 url=url,
                 category=item.get("category", "auto"),
                 content=item.get("content", ""),
-                last_scraped=datetime.utcnow()
+                last_scraped=utc_now()
             ))
             existing_urls.add(url)
             added += 1
@@ -3141,8 +3702,8 @@ def seed_initial_scraped_pages():
                     trigger="seed",
                     pages=added,
                     status="done",
-                    started_at=datetime.utcnow(),
-                    finished_at=datetime.utcnow()
+                    started_at=utc_now(),
+                    finished_at=utc_now()
                 )
                 db.session.add(log)
                 db.session.commit()
@@ -3247,10 +3808,8 @@ def initialize_app():
         print(f"[PDF] Found {len(ALL_PDFS)} files")
         count = ScrapedPage.query.count()
         if count == 0:
-            print("[Startup] DB ว่าง → โหลด Seed Data หน้าเว็บเริ่มต้น...")
-            seed_count = seed_initial_scraped_pages()
+            print("[Startup] DB ว่าง → โหลดไฟล์หลักสูตรและเริ่ม scrape ในพื้นหลัง...")
             load_context_from_db()
-            print(f"[Startup] โหลด Seed Data สำเร็จ ({seed_count} หน้า) → พร้อมตอบคำถามทันที")
             is_production = os.environ.get("FLASK_ENV") == "production"
             if is_production:
                 def delayed_scrape():
@@ -3261,8 +3820,6 @@ def initialize_app():
                 scrape_in_background(trigger="startup")
         else:
             print(f"[Startup] DB มี {count} หน้า → โหลดจาก DB ข้าม scrape")
-            # โหลด seed เพิ่มเติมเฉพาะหน้าที่ยังไม่มีใน DB
-            seed_initial_scraped_pages()
             load_context_from_db()
 
         # migrate FAQ จาก Excel → DB (ครั้งแรกเท่านั้น) แล้วโหลดจาก DB
@@ -3332,7 +3889,11 @@ def load_curriculum_pdfs():
     print(f"[Curriculum] รวม {count} ไฟล์ถูกโหลดเข้า context")
 
 import os as _os
-if _os.environ.get("WERKZEUG_RUN_MAIN") != "true":
+_skip_init = (
+    _os.environ.get("SKIP_APP_INIT") == "1"
+    or (_os.environ.get("FLASK_RUN_FROM_CLI") == "true" and _os.environ.get("WERKZEUG_RUN_MAIN") != "true")
+)
+if not _skip_init:
     initialize_app()
 
 if __name__ == "__main__":

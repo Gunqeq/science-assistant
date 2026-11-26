@@ -250,10 +250,25 @@
     </p>
     {% if guest_mode_enabled %}
     <script>
+        function getThaiDateKey() {
+            try {
+                return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok' });
+            } catch (e) {
+                const d = new Date(Date.now() + 7 * 3600 * 1000);
+                return d.toISOString().slice(0, 10);
+            }
+        }
+
         document.addEventListener('DOMContentLoaded', function() {
+            try { localStorage.removeItem('guest_quota_exhausted'); } catch (e) {}
             const guestBtn = document.getElementById('login-guest-btn');
-            if (guestBtn && localStorage.getItem('guest_quota_exhausted') === 'true') {
-                guestBtn.innerHTML = '<i class="fas fa-lock" style="color:#9ca3af;"></i> ทดลองใช้งาน (ครบสิทธิ์ 5 คำถามแล้ว)';
+            const todayKey = getThaiDateKey();
+            const savedKey = localStorage.getItem('guest_quota_max');
+            if (savedKey && savedKey !== todayKey) {
+                localStorage.removeItem('guest_quota_max');
+            }
+            if (guestBtn && localStorage.getItem('guest_quota_max') === todayKey) {
+                guestBtn.innerHTML = '<i class="fas fa-lock" style="color:#9ca3af;"></i> ทดลองใช้งาน (ครบ 5 คำถามวันนี้แล้ว)';
                 guestBtn.style.opacity = '0.65';
                 guestBtn.style.cursor = 'not-allowed';
                 guestBtn.style.background = '#f3f4f6';
@@ -261,7 +276,7 @@
                 guestBtn.style.color = '#9ca3af';
                 guestBtn.addEventListener('click', function(e) {
                     e.preventDefault();
-                    alert('คุณใช้สิทธิ์ทดลองใช้งานครบ 5 คำถามแล้วครับ กรุณาเข้าสู่ระบบด้วย LINE เพื่อพูดคุยต่อได้ไม่จำกัด');
+                    alert('คุณใช้สิทธิ์ทดลองใช้งานครบ 5 คำถามวันนี้แล้วครับ ระบบจะรีเซ็ตสิทธิ์ใหม่ในวันพรุ่งนี้ หรือเข้าสู่ระบบด้วย LINE เพื่อพูดคุยต่อได้ไม่จำกัด');
                 });
             }
         });
