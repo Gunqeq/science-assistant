@@ -1779,18 +1779,21 @@
             content.innerHTML = '<div class="suggested-label" style="font-size:0.8rem;color:#6b7280;margin-bottom:10px;padding:6px 10px;background:#f0fdf4;border-radius:4px;border-left:3px solid #1a5f3f;"><i class="fas fa-lightbulb" style="color:#1a5f3f;"></i> เอกสารที่แนะนำ</div>';
 
             matched.forEach(pdf => {
-                const clickAction = pdf.id
-                    ? `window.location.href='/download/${pdf.id}'`
-                    : `alert('ไม่พบไฟล์ในระบบ')`;
                 const item = document.createElement('div');
                 item.className = 'pdf-item';
                 item.style.borderLeft = '3px solid #1a5f3f';
-                item.setAttribute('onclick', clickAction);
+                item.addEventListener('click', () => {
+                    if (pdf.id) {
+                        window.location.href = `/download/${encodeURIComponent(pdf.id)}`;
+                    } else {
+                        alert('ไม่พบไฟล์ในระบบ');
+                    }
+                });
                 item.innerHTML = `
                     <div class="pdf-icon"><i class="fas fa-file-pdf"></i></div>
                     <div class="pdf-info">
-                        <div class="pdf-name">${pdf.name}</div>
-                        <div class="pdf-category">${pdf.category}</div>
+                        <div class="pdf-name">${escapeHtml(pdf.name)}</div>
+                        <div class="pdf-category">${escapeHtml(pdf.category)}</div>
                     </div>
                     <div class="download-icon"><i class="fas fa-download"></i></div>
                 `;
@@ -1830,6 +1833,21 @@
             return url.toLowerCase().replace(/\/+$/, '').trim();
         }
 
+        function sanitizeUrl(url) {
+            if (!url || typeof url !== 'string') return '';
+            const trimmed = url.trim();
+            if (/^\/(?!\/)/.test(trimmed)) return trimmed;
+            if (/^https?:\/\//i.test(trimmed)) {
+                try {
+                    const parsed = new URL(trimmed);
+                    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+                        return trimmed;
+                    }
+                } catch (e) {}
+            }
+            return '';
+        }
+
         function showSuggestedLinks(links) {
             if (!links || links.length === 0) return;
 
@@ -1848,9 +1866,11 @@
             if (newLinks.length === 0) return;
 
             newLinks.forEach(link => {
-                const s = getLinkStyle(link.url);
+                const safeHref = sanitizeUrl(link && link.url);
+                if (!safeHref) return;
+                const s = getLinkStyle(safeHref);
                 const el = document.createElement('a');
-                el.href   = link.url;
+                el.href   = safeHref;
                 el.target = '_blank';
                 el.rel    = 'noopener noreferrer';
                 el.style.textDecoration = 'none';
@@ -1860,8 +1880,8 @@
                             <i class="fas ${s.icon}"></i>
                         </div>
                         <div class="quick-link-text">
-                            <div class="quick-link-title">${link.title}</div>
-                            ${link.desc ? `<div class="quick-link-desc">${link.desc}</div>` : ''}
+                            <div class="quick-link-title">${escapeHtml(link.title)}</div>
+                            ${link.desc ? `<div class="quick-link-desc">${escapeHtml(link.desc)}</div>` : ''}
                         </div>
                         <i class="fas fa-chevron-right" style="color:#9ca3af;"></i>
                     </div>
@@ -1974,7 +1994,7 @@
                 '"': '&quot;',
                 "'": '&#039;'
             };
-            return text.replace(/[&<>"']/g, m => map[m]);
+            return (text == null ? '' : String(text)).replace(/[&<>"']/g, m => map[m]);
         }
 
         function formatMessage(text) {
@@ -2056,14 +2076,23 @@
             if (!links.length && !files.length) return '';
             let html = '<div class="inline-resources">';
                 if (links.length) {
+                    const seenUrls = new Set();
+                    const seenTitles = new Set();
                     links.forEach(l => {
-                        if (l && l.url) {
-                            html += `<a class="inline-res-btn" href="${escapeHtml(l.url)}" target="_blank" rel="noopener noreferrer">`
-                                 + `<i class="fa-solid fa-link" style="font-size:0.75rem;opacity:0.85;"></i> `
-                                 + `<span>${escapeHtml(l.title || l.url)}</span> `
-                                 + `<i class="fa-solid fa-arrow-up-right-from-square" style="font-size:0.7rem;margin-left:3px;opacity:0.85;"></i>`
-                                 + `</a>`;
+                        const safeHref = sanitizeUrl(l && l.url);
+                        if (!safeHref) return;
+                        const normUrl = normalizeUrl(safeHref).replace(/^https?:\/\//, '');
+                        const normTitle = (l.title || '').trim().toLowerCase();
+                        if (seenUrls.has(normUrl) || (normTitle && seenTitles.has(normTitle))) {
+                            return;
                         }
+                        seenUrls.add(normUrl);
+                        if (normTitle) seenTitles.add(normTitle);
+                        html += `<a class="inline-res-btn" href="${escapeHtml(safeHref)}" target="_blank" rel="noopener noreferrer">`
+                             + `<i class="fa-solid fa-link" style="font-size:0.75rem;opacity:0.85;"></i> `
+                             + `<span>${escapeHtml(l.title || safeHref)}</span> `
+                             + `<i class="fa-solid fa-arrow-up-right-from-square" style="font-size:0.7rem;margin-left:3px;opacity:0.85;"></i>`
+                             + `</a>`;
                     });
                 }
                 if (files.length) {
@@ -2280,6 +2309,41 @@
             if (!waiting) userInput.focus();
         }
 
+        function getThaiDateKey() {
+            try {
+                return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok' });
+            } catch (e) {
+                const d = new Date(Date.now() + 7 * 3600 * 1000);
+                return d.toISOString().slice(0, 10);
+            }
+        }
+
+        function clearGuestQuotaMax() {
+            try {
+                localStorage.removeItem('guest_quota_max');
+                localStorage.removeItem('guest_quota_exhausted');
+            } catch (e) {}
+        }
+
+        function isGuestQuotaMaxToday() {
+            try { localStorage.removeItem('guest_quota_exhausted'); } catch (e) {}
+            const todayKey = getThaiDateKey();
+            const savedKey = localStorage.getItem('guest_quota_max');
+            if (!savedKey) return false;
+            if (savedKey !== todayKey) {
+                localStorage.removeItem('guest_quota_max');
+                return false;
+            }
+            return true;
+        }
+
+        function markGuestQuotaMaxToday() {
+            try {
+                localStorage.removeItem('guest_quota_exhausted');
+                localStorage.setItem('guest_quota_max', getThaiDateKey());
+            } catch (e) {}
+        }
+
         // Handle chat form submission
         chatForm.addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -2288,7 +2352,7 @@
                 activeStreamCancel = null;
             }
             if (isWaitingForBot) return;
-            if ("{{ 'true' if session.get('is_guest') else 'false' }}" === "true" && localStorage.getItem('guest_quota_exhausted') === 'true') {
+            if ("{{ 'true' if session.get('is_guest') else 'false' }}" === "true" && isGuestQuotaMaxToday()) {
                 lockGuestInput();
                 return;
             }
@@ -2320,7 +2384,7 @@
                     const onBotFinish = () => {
                         // จัดการโควตาโหมดทดลองใช้งาน (Guest Mode: เมื่อตอบครบ 5 คำถาม ให้บอทพิมพ์บอกเหมือนคำตอบ)
                         if (data.is_guest && data.quota_exceeded) {
-                            localStorage.setItem('guest_quota_exhausted', 'true');
+                            markGuestQuotaMaxToday();
                             showTypingIndicator();
                             setTimeout(() => {
                                 hideTypingIndicator();
@@ -2368,7 +2432,7 @@
                         return;
                     }
                     if (response.status === 403 && data && data.quota_exceeded) {
-                        localStorage.setItem('guest_quota_exhausted', 'true');
+                        markGuestQuotaMaxToday();
                         addMessage(
                             data.response || 'คุณใช้สิทธิ์ทดลองใช้งานครบ 5 คำถามแล้วครับ หากต้องการพูดคุยต่อ กรุณาเข้าสู่ระบบผ่าน LINE ได้เลยครับ',
                             false,
@@ -2455,11 +2519,15 @@
                 const bar   = document.getElementById('suggest-bar');
                 const chips = document.getElementById('suggest-chips');
                 console.log('bar:', bar, 'chips:', chips);  // เพิ่มบรรทัดนี้
-                chips.innerHTML = top3.map(q => `
-                    <button class="suggest-chip" onclick="sendSuggestion(this, '${q.question.replace(/'/g, "\'")}')">
-                        ${q.question}
-                    </button>
-                `).join('');
+                chips.replaceChildren();
+                top3.forEach(q => {
+                    const btn = document.createElement('button');
+                    btn.type = 'button';
+                    btn.className = 'suggest-chip';
+                    btn.textContent = q.question || '';
+                    btn.addEventListener('click', () => sendSuggestion(btn, q.question || ''));
+                    chips.appendChild(btn);
+                });
 
                 updateSuggestBarVisibility();
                 console.log('bar displayed');  // เพิ่มบรรทัดนี้
@@ -2533,15 +2601,15 @@
             const isGuestUser = "{{ 'true' if session.get('is_guest') else 'false' }}" === "true";
             if (!isGuestUser) {
                 // นิสิตที่ล็อกอินด้วย LINE ปลดล็อกโควตาทดลอง
-                localStorage.removeItem('guest_quota_exhausted');
+                clearGuestQuotaMax();
             }
 
-            const isSessionGuestLimit = "{{ 'true' if session.get('is_guest') and session.get('guest_question_count', 0) >= 5 else 'false' }}" === "true";
-            const isLocalGuestExhausted = isGuestUser && (localStorage.getItem('guest_quota_exhausted') === 'true');
-            const isGuestLimitReached = isSessionGuestLimit || isLocalGuestExhausted;
+            const isSessionGuestLimit = "{{ 'true' if session.get('is_guest') and session.get('guest_quota_date') == thai_today_str and session.get('guest_question_count', 0) >= 5 else 'false' }}" === "true";
+            const isLocalGuestMax = isGuestUser && isGuestQuotaMaxToday();
+            const isGuestLimitReached = isSessionGuestLimit || isLocalGuestMax;
 
             if (isGuestLimitReached) {
-                localStorage.setItem('guest_quota_exhausted', 'true');
+                markGuestQuotaMaxToday();
                 if (!displayMessages || displayMessages.length === 0) {
                     addMessage(
                         'คุณใช้สิทธิ์ทดลองใช้งานครบ 5 คำถามแล้วครับ หากมีข้อสงสัยเพิ่มเติมหรือต้องการพูดคุยต่อ กรุณาเข้าสู่ระบบผ่าน LINE ได้เลยครับ',

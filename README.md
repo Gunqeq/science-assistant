@@ -18,9 +18,9 @@ AI-powered chatbot for the **Faculty of Science, Kasetsart University Sriracha C
 
 | Layer      | Technology                                              |
 | ---------- | ------------------------------------------------------- |
-| Backend    | Python, Flask, Flask-Login, Flask-SQLAlchemy            |
+| Backend    | Python, Flask, Flask-SQLAlchemy                        |
 | AI         | Google Gemini API (gemini-3.1-flash-lite, multi-key)    |
-| Auth       | LINE Login (OAuth 2.0), Flask-Login, Secure Session     |
+| Auth       | LINE Login (OAuth 2.0), Secure Session                  |
 | Database   | SQLite (dev with WAL mode) / PostgreSQL (production)    |
 | Frontend   | HTML, CSS, JavaScript (Jinja2 templates, Responsive)   |
 | Data       | BeautifulSoup, PyPDF2, openpyxl                         |

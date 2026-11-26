@@ -24,7 +24,13 @@ PRIORITY_PAGES = {
     "env_program":      "https://sci.src.ku.ac.th/program/environmental-science/",
     "special_cs":       "https://sci.src.ku.ac.th/program/special-computer-science/",
     "special_it":       "https://sci.src.ku.ac.th/program/special-information-technology/",
-    "special_digital":  "https://sci.src.ku.ac.th/program/special-digital-science-and-technology/",
+    "special_digital":     "https://sci.src.ku.ac.th/program/special-digital-science-and-technology/",
+    "program_index":       "https://sci.src.ku.ac.th/program/",
+    "chem_program":        "https://sci.src.ku.ac.th/program/applied-chemical-science-and-technology/",
+    "math_program":        "https://sci.src.ku.ac.th/program/data-analytics-and-actuarial-science/",
+    "physics_program":     "https://sci.src.ku.ac.th/program/physics/",
+    "env_master_program":  "https://sci.src.ku.ac.th/program/natural-product-science-technology/",
+    "chem_master_program": "https://sci.src.ku.ac.th/program/applied-chemical-technology/",
     "dean":             "https://sci.src.ku.ac.th/%e0%b8%82%e0%b9%89%e0%b8%ad%e0%b8%a1%e0%b8%b9%e0%b8%a5%e0%b8%97%e0%b8%b1%e0%b9%88%e0%b8%a7%e0%b9%84%e0%b8%9b%e0%b8%82%e0%b8%ad%e0%b8%87%e0%b8%84%e0%b8%93%e0%b8%b0/%e0%b8%84%e0%b8%93%e0%b8%9a%e0%b8%94%e0%b8%b5%e0%b9%81%e0%b8%a5%e0%b8%b0%e0%b8%9c%e0%b8%b9%e0%b9%89%e0%b8%9a%e0%b8%a3%e0%b8%b4%e0%b8%ab%e0%b8%b2%e0%b8%a3/",
     "dean_history":     "https://sci.src.ku.ac.th/%e0%b8%82%e0%b9%89%e0%b8%ad%e0%b8%a1%e0%b8%b9%e0%b8%a5%e0%b8%97%e0%b8%b1%e0%b9%88%e0%b8%a7%e0%b9%84%e0%b8%9b%e0%b8%82%e0%b8%ad%e0%b8%87%e0%b8%84%e0%b8%93%e0%b8%b0/%e0%b8%97%e0%b8%b3%e0%b9%80%e0%b8%99%e0%b8%b5%e0%b8%a2%e0%b8%9a%e0%b8%84%e0%b8%93%e0%b8%9a%e0%b8%94%e0%b8%b5/",
     "academic_staff":   "https://sci.src.ku.ac.th/%e0%b8%82%e0%b9%89%e0%b8%ad%e0%b8%a1%e0%b8%b9%e0%b8%a5%e0%b8%97%e0%b8%b1%e0%b9%88%e0%b8%a7%e0%b9%84%e0%b8%9b%e0%b8%82%e0%b8%ad%e0%b8%87%e0%b8%84%e0%b8%93%e0%b8%b0/%e0%b8%9a%e0%b8%b8%e0%b8%84%e0%b8%a5%e0%b8%b2%e0%b8%81%e0%b8%a3%e0%b8%a7%e0%b8%b4%e0%b8%8a%e0%b8%b2%e0%b8%81%e0%b8%b2%e0%b8%a3-2/",
@@ -70,7 +76,7 @@ SKIP_PATTERNS = [
 
 def is_spider_trap(url):
     """
-    ตรวจจับ URL ที่เป็น Spider Trap, ลูปเส้นทางซ้ำซาก, หรือระบบหลังบ้าน/แบบสอบถาม
+    ตรวจจับ URL ที่เป็น Spider Trap, เส้นทางซ้ำ, หรือระบบหลังบ้าน/แบบสอบถาม
     เพื่อป้องกันไม่ให้ Crawler วนลูปและกินโควตาหน้าเพจ
     """
     if not url:

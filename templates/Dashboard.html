@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="csrf-token" content="{{ csrf_token() }}">
 <title>Admin Dashboard — Science Assistant</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1811,7 +1812,7 @@ input:checked + .toggle-slider:before {
 
         <!-- Restore Default Seed Button -->
         <button type="button" class="btn" onclick="restoreDefaultSeedKnowledge()" style="background:#eff6ff;color:#2563eb;border:1.5px solid #bfdbfe;display:inline-flex;align-items:center;gap:8px;font-weight:600;min-height:44px;" id="restore-default-btn" title="กู้คืนหน้าเว็บตั้งต้นจาก static/seed_scraped_pages.json">
-          <i class="fas fa-undo"></i> กู้คืนจากค่าเริ่มต้นระบบ (Default 23 หน้า)
+          <i class="fas fa-undo"></i> กู้คืนจากค่าเริ่มต้นระบบ (Default 54 หน้า)
         </button>
       </div>
 
@@ -1990,6 +1991,40 @@ input:checked + .toggle-slider:before {
 </div>
 
 <script>
+const CSRF_TOKEN = (document.querySelector('meta[name="csrf-token"]') || {}).content || '';
+(function() {
+  const origFetch = window.fetch.bind(window);
+  window.fetch = function(input, init) {
+    init = init ? { ...init } : {};
+    const method = (init.method || 'GET').toUpperCase();
+    const urlStr = typeof input === 'string' ? input : (input && input.url) || '';
+    if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(method) &&
+        (urlStr.startsWith('/api/admin/') || urlStr.startsWith('/admin/'))) {
+      const headers = new Headers(init.headers || (typeof input !== 'string' && input && input.headers) || {});
+      if (CSRF_TOKEN && !headers.has('X-CSRF-Token')) {
+        headers.set('X-CSRF-Token', CSRF_TOKEN);
+      }
+      init.headers = headers;
+    }
+    return origFetch(input, init);
+  };
+})();
+
+function sanitizeUrl(url) {
+  if (!url || typeof url !== 'string') return '';
+  const trimmed = url.trim();
+  if (/^\/(?!\/)/.test(trimmed)) return trimmed;
+  if (/^https?:\/\//i.test(trimmed)) {
+    try {
+      const parsed = new URL(trimmed);
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+        return trimmed;
+      }
+    } catch (e) {}
+  }
+  return '';
+}
+
 let allLogs = [], currentPage = 1, chartInstance = null;
 let totalLogsCount = 0;
 const PAGE_SIZE = 20; // หน้าละ 20 rows ตาม backend
@@ -2126,7 +2161,7 @@ function renderLogs(logs) {
   tbody.innerHTML = logs.map((l, i) => {
     let sIdDisplay = '';
     if (l.is_guest || l.session_id === 'guest' || l.session_id === 'anonymous' || (l.session_id && l.session_id.startsWith('guest_'))) {
-      sIdDisplay = 'guest';
+      sIdDisplay = 'ผู้ใช้งานทั่วไป';
     } else {
       const sId = l.session_id || '-';
       sIdDisplay = sId.length > 14 ? escHtml(sId.slice(0, 14)) + '...' : escHtml(sId);
@@ -2137,7 +2172,7 @@ function renderLogs(logs) {
       reviewBadges += `<span style="background:#fee2e2;color:#b91c1c;border:1px solid #fecaca;padding:2px 7px;border-radius:99px;font-size:0.7rem;font-weight:700;display:inline-flex;align-items:center;gap:3px;margin-right:6px;"><i class="fas fa-thumbs-down"></i> ผู้ใช้ไม่ถูกใจ</span>`;
     }
     if (l.confidence !== null && l.confidence !== undefined && l.confidence < 60) {
-      reviewBadges += `<span style="background:#fef3c7;color:#b45309;border:1px solid #fed7aa;padding:2px 7px;border-radius:99px;font-size:0.7rem;font-weight:700;display:inline-flex;align-items:center;gap:3px;margin-right:6px;"><i class="fas fa-exclamation-triangle"></i> มั่นใจต่ำ (${l.confidence}%)</span>`;
+      reviewBadges += `<span style="background:#fef3c7;color:#b45309;border:1px solid #fed7aa;padding:2px 7px;border-radius:99px;font-size:0.7rem;font-weight:700;display:inline-flex;align-items:center;gap:3px;margin-right:6px;"><i class="fas fa-exclamation-triangle"></i> มั่นใจต่ำ ${l.confidence}%</span>`;
     }
 
     return `<tr>
@@ -2157,8 +2192,8 @@ function renderLogs(logs) {
         <button onclick="openDebugModal(${l.id})" class="btn-inspect" style="display:inline-flex;align-items:center;gap:5px;padding:5px 12px;font-size:.78rem;font-weight:600;border-radius:99px;background:#f0fdf4;color:#16a34a;border:1px solid #bbf7d0;cursor:pointer;transition:all .15s ease;" onmouseover="this.style.background='#dcfce7'" onmouseout="this.style.background='#f0fdf4'">
           <i class="fas fa-stethoscope"></i> ตรวจสอบ
         </button>
-        <button onclick="openConvertFaqModalFromLog(${l.id})" style="display:inline-flex;align-items:center;gap:4px;padding:5px 10px;font-size:.78rem;font-weight:600;border-radius:99px;background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;cursor:pointer;margin-left:5px;transition:all .15s ease;" onmouseover="this.style.background='#dbeafe'" onmouseout="this.style.background='#eff6ff'" title="แก้ไขและบันทึกเป็น FAQ">
-          <i class="fas fa-file-signature"></i> บันทึก FAQ
+        <button onclick="openConvertFaqModalFromLog(${l.id})" style="display:inline-flex;align-items:center;gap:4px;padding:5px 10px;font-size:.78rem;font-weight:600;border-radius:99px;background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;cursor:pointer;margin-left:5px;transition:all .15s ease;" onmouseover="this.style.background='#dbeafe'" onmouseout="this.style.background='#eff6ff'" title="แก้ไขและบันทึกเป็นคำถามพบบ่อย">
+          <i class="fas fa-file-signature"></i> บันทึกเป็น FAQ
         </button>
       </td>
     </tr>`;
@@ -2256,20 +2291,20 @@ async function handleKnowledgeFileSelect(event) {
       feedback.style.background = '#ecfdf5';
       feedback.style.color = '#15803d';
       feedback.style.border = '1px solid #bbf7d0';
-      feedback.innerHTML = `<i class="fas fa-check-circle"></i> ${data.message}`;
+      feedback.innerHTML = `<i class="fas fa-check-circle"></i> ${escHtml(data.message)}`;
       loadScraperStatus();
       loadStats();
     } else {
       feedback.style.background = '#fef2f2';
       feedback.style.color = '#b91c1c';
       feedback.style.border = '1px solid #fecaca';
-      feedback.innerHTML = `<i class="fas fa-exclamation-circle"></i> ข้อผิดพลาด: ${data.error || 'ไม่สามารถนำเข้าข้อมูลได้'}`;
+      feedback.innerHTML = `<i class="fas fa-exclamation-circle"></i> ข้อผิดพลาด: ${escHtml(data.error || 'ไม่สามารถนำเข้าข้อมูลได้')}`;
     }
   } catch (err) {
     feedback.style.background = '#fef2f2';
     feedback.style.color = '#b91c1c';
     feedback.style.border = '1px solid #fecaca';
-    feedback.innerHTML = `<i class="fas fa-exclamation-circle"></i> การเชื่อมต่อล้มเหลว: ${err.message}`;
+    feedback.innerHTML = `<i class="fas fa-exclamation-circle"></i> การเชื่อมต่อล้มเหลว: ${escHtml(err.message)}`;
   } finally {
     btn.disabled = false;
     event.target.value = '';
@@ -2277,7 +2312,7 @@ async function handleKnowledgeFileSelect(event) {
 }
 
 async function restoreDefaultSeedKnowledge() {
-  if (!confirm('คุณต้องการกู้คืนข้อมูลเริ่มต้นของระบบ (Default Seed) ใช่หรือไม่?\nระบบจะดึงหน้าเว็บหลัก 23 หน้าเริ่มต้นกลับเข้าสู่ Knowledge Base')) {
+  if (!confirm('คุณต้องการกู้คืนข้อมูลเริ่มต้นของระบบ (Default Seed) ใช่หรือไม่?\nระบบจะดึงหน้าเว็บหลัก 54 หน้าเริ่มต้นกลับเข้าสู่ Knowledge Base')) {
     return;
   }
 
@@ -2301,20 +2336,20 @@ async function restoreDefaultSeedKnowledge() {
       feedback.style.background = '#ecfdf5';
       feedback.style.color = '#15803d';
       feedback.style.border = '1px solid #bbf7d0';
-      feedback.innerHTML = `<i class="fas fa-check-circle"></i> ${data.message}`;
+      feedback.innerHTML = `<i class="fas fa-check-circle"></i> ${escHtml(data.message)}`;
       loadScraperStatus();
       loadStats();
     } else {
       feedback.style.background = '#fef2f2';
       feedback.style.color = '#b91c1c';
       feedback.style.border = '1px solid #fecaca';
-      feedback.innerHTML = `<i class="fas fa-exclamation-circle"></i> ข้อผิดพลาด: ${data.error || 'ไม่สามารถกู้คืนได้'}`;
+      feedback.innerHTML = `<i class="fas fa-exclamation-circle"></i> ข้อผิดพลาด: ${escHtml(data.error || 'ไม่สามารถกู้คืนได้')}`;
     }
   } catch (err) {
     feedback.style.background = '#fef2f2';
     feedback.style.color = '#b91c1c';
     feedback.style.border = '1px solid #fecaca';
-    feedback.innerHTML = `<i class="fas fa-exclamation-circle"></i> การเชื่อมต่อล้มเหลว: ${err.message}`;
+    feedback.innerHTML = `<i class="fas fa-exclamation-circle"></i> การเชื่อมต่อล้มเหลว: ${escHtml(err.message)}`;
   } finally {
     btn.disabled = false;
   }
@@ -2346,8 +2381,8 @@ function renderUsers(users) {
       <td style="color:#9ca3af">${(userPage - 1) * 20 + i + 1}</td>
       <td>
         <div style="display:flex;align-items:center;gap:10px;">
-          ${u.picture_url
-            ? `<img src="${u.picture_url}" style="width:32px;height:32px;border-radius:50%;object-fit:cover;border:2px solid #bbf7d0;">`
+          ${sanitizeUrl(u.picture_url)
+            ? `<img src="${escHtml(sanitizeUrl(u.picture_url))}" style="width:32px;height:32px;border-radius:50%;object-fit:cover;border:2px solid #bbf7d0;">`
             : `<div style="width:32px;height:32px;border-radius:50%;background:#06C755;display:flex;align-items:center;justify-content:center;font-size:.8rem;font-weight:700;color:white;">${escHtml((u.display_name||'?')[0])}</div>`
           }
           <span style="font-weight:500">${escHtml(u.display_name || '-')}</span>
@@ -2914,10 +2949,12 @@ function renderDiscoveredLinks(pageItems, totalFiltered, startIndex, endIndex, t
 
     const decodedUrl = l.url_decoded || safeDecodeURI(l.url || '');
     const decodedSource = l.source_page_decoded || safeDecodeURI(l.source_page || '');
+    const safeSourceHref = sanitizeUrl(l.source_page);
+    const safeLinkHref = sanitizeUrl(l.url);
 
     const sourceDisplay = l.source_page
-      ? (l.source_page.startsWith('http')
-          ? `<a href="${escapeHtml(l.source_page)}" target="_blank" rel="noopener noreferrer" style="color:#1a5f3f;text-decoration:none;font-size:0.8rem;display:inline-flex;align-items:center;gap:4px;max-width:100%;" title="${escapeHtml(decodedSource)}"><span class="truncate-source">${escapeHtml(decodedSource)}</span> <i class="fas fa-external-link-alt" style="font-size:0.7rem;flex-shrink:0;opacity:0.7;"></i></a>`
+      ? (safeSourceHref && /^https?:\/\//i.test(safeSourceHref)
+          ? `<a href="${escapeHtml(safeSourceHref)}" target="_blank" rel="noopener noreferrer" style="color:#1a5f3f;text-decoration:none;font-size:0.8rem;display:inline-flex;align-items:center;gap:4px;max-width:100%;" title="${escapeHtml(decodedSource)}"><span class="truncate-source">${escapeHtml(decodedSource)}</span> <i class="fas fa-external-link-alt" style="font-size:0.7rem;flex-shrink:0;opacity:0.7;"></i></a>`
           : `<span class="truncate-source" style="font-size:0.8rem;color:#6b7280;" title="${escapeHtml(decodedSource)}">${escapeHtml(decodedSource)}</span>`)
       : '<span style="color:#9ca3af;">-</span>';
 
@@ -2963,10 +3000,12 @@ function renderDiscoveredLinks(pageItems, totalFiltered, startIndex, endIndex, t
         </div>
       </td>
       <td>
-        <a href="${escapeHtml(l.url)}" target="_blank" rel="noopener noreferrer" style="color:#2563eb;text-decoration:none;display:inline-flex;align-items:center;gap:4px;max-width:100%;" title="${escapeHtml(decodedUrl)}">
+        ${safeLinkHref
+          ? `<a href="${escapeHtml(safeLinkHref)}" target="_blank" rel="noopener noreferrer" style="color:#2563eb;text-decoration:none;display:inline-flex;align-items:center;gap:4px;max-width:100%;" title="${escapeHtml(decodedUrl)}">
           <span class="truncate-url">${escapeHtml(decodedUrl)}</span>
           <i class="fas fa-external-link-alt" style="font-size:0.75rem;flex-shrink:0;opacity:0.75;"></i>
-        </a>
+        </a>`
+          : `<span class="truncate-url" style="color:#6b7280;" title="${escapeHtml(decodedUrl)}">${escapeHtml(decodedUrl)}</span>`}
       </td>
       <td class="col-source">${sourceDisplay}</td>
       <td class="col-scan-time" style="font-size:0.8rem;color:#64748b;white-space:nowrap;text-align:center;">${escapeHtml((l.last_seen || '-').split(' ')[0])}</td>
@@ -3343,12 +3382,6 @@ function closeDebugModal() {
   currentDebugLogId = null;
 }
 
-function reanalyzeCurrentLog() {
-  if (currentDebugLogId) {
-    openDebugModal(currentDebugLogId);
-  }
-}
-
 function renderDebugInspector(data, containerId) {
   const container = document.getElementById(containerId);
   if (!container) return;
@@ -3363,56 +3396,64 @@ function renderDebugInspector(data, containerId) {
   let confColor = '#16a34a';
   let confBg = '#f0fdf4';
   let confBorder = '#bbf7d0';
-  let confText = '● ความมั่นใจสูง (High Confidence)';
+  let confText = '<i class="fas fa-circle" style="font-size:0.5rem;vertical-align:middle;margin-right:4px;"></i>ระดับความมั่นใจสูง';
   if (level === 'LOW' || score < 45) {
     confColor = '#dc2626';
     confBg = '#fef2f2';
     confBorder = '#fecaca';
-    confText = '● ความมั่นใจต่ำ (Low Confidence)';
+    confText = '<i class="fas fa-circle" style="font-size:0.5rem;vertical-align:middle;margin-right:4px;"></i>ระดับความมั่นใจต่ำ';
   } else if (level === 'MEDIUM' || score < 75) {
     confColor = '#ea580c';
     confBg = '#fff7ed';
     confBorder = '#fed7aa';
-    confText = '● ความมั่นใจปานกลาง (Medium Confidence)';
+    confText = '<i class="fas fa-circle" style="font-size:0.5rem;vertical-align:middle;margin-right:4px;"></i>ระดับความมั่นใจปานกลาง';
   }
 
   // Route labels
-  let routeLabel = '🌐 Web & PDF RAG';
+  let routeLabel = '<i class="fas fa-globe"></i> เอกสารหน้าเว็บและประกาศ';
   let routeColor = '#2563eb';
   let routeBg = '#eff6ff';
   if (route === 'direct_rule') {
-    routeLabel = '⚡ Pre-LLM Guard (กฎคงที่)';
+    routeLabel = '<i class="fas fa-bolt"></i> กฎตายตัวของระบบ';
     routeColor = '#7c3aed';
     routeBg = '#f5f3ff';
   } else if (route === 'faq_grounded') {
-    routeLabel = '📘 FAQ Grounded (ดึงตรงจาก FAQ)';
+    routeLabel = '<i class="fas fa-book"></i> คำถามคำตอบที่พบบ่อย';
     routeColor = '#059669';
     routeBg = '#ecfdf5';
   } else if (route === 'no_context_fallback') {
-    routeLabel = '⚠️ No Context Fallback (เอกสารสำรอง)';
+    routeLabel = '<i class="fas fa-exclamation-triangle"></i> เอกสารสำรองทั่วไป';
     routeColor = '#d97706';
     routeBg = '#fffbeb';
+  } else if (route === 'guardrail_intercepted' || data.is_intercepted) {
+    routeLabel = '<i class="fas fa-shield-alt"></i> นอกเหนือข้อมูลของระบบ';
+    routeColor = '#dc2626';
+    routeBg = '#fef2f2';
   }
 
   // Faithfulness label
-  let faithLabel = '✅ ซื่อตรงตาม Context (Grounded 100%)';
+  let faithLabel = '<i class="fas fa-check-circle"></i> ข้อมูลตรงตามเอกสารอ้างอิงครบถ้วน';
   let faithBg = '#f0fdf4';
   let faithColor = '#16a34a';
   if (faith.status === 'hallucination_risk') {
-    faithLabel = '⚠️ เสี่ยงตอบหลอน (พบค่านอก Context)';
+    faithLabel = '<i class="fas fa-exclamation-triangle"></i> พบข้อมูลที่ไม่มีในคลังเอกสารอ้างอิง';
     faithBg = '#fef2f2';
     faithColor = '#dc2626';
   } else if (faith.status === 'warning') {
-    faithLabel = '⚠️ มีจุดควรตรวจทาน (บางส่วนไม่พบใน Context)';
+    faithLabel = '<i class="fas fa-exclamation-circle"></i> ข้อมูลบางส่วนไม่ปรากฏในเอกสารอ้างอิง';
     faithBg = '#fff7ed';
     faithColor = '#ea580c';
+  } else if (faith.status === 'unverified') {
+    faithLabel = '<i class="fas fa-info-circle"></i> คำตอบเชิงบรรยาย ไม่มีตัวเลขให้เทียบในเอกสาร';
+    faithBg = '#f8fafc';
+    faithColor = '#64748b';
   }
 
   // Chunks accordion
   const sources = data.retrieved_sources || [];
   let sourcesHtml = '';
   if (sources.length === 0) {
-    sourcesHtml = '<div style="color:#9ca3af;font-size:.85rem;padding:12px;background:#f9fafb;border-radius:8px;text-align:center;">ไม่พบเอกสารหน้าเว็บ/ระเบียบการที่เกี่ยวข้อง (อาจตอบด้วยกฎตายตัวหรือ FAQ)</div>';
+    sourcesHtml = '<div style="color:#9ca3af;font-size:.85rem;padding:12px;background:#f9fafb;border-radius:8px;text-align:center;">ไม่พบเอกสารหน้าเว็บหรือระเบียบการที่เกี่ยวข้อง อาจตอบด้วยกฎตายตัวหรือคำถามที่พบบ่อย</div>';
   } else {
     sourcesHtml = sources.map((s, idx) => `
       <div style="border:1px solid #e5e7eb;border-radius:10px;margin-bottom:8px;background:#ffffff;overflow:hidden;">
@@ -3427,7 +3468,7 @@ function renderDebugInspector(data, containerId) {
           </div>
         </div>
         <div id="chunk-${containerId}-${idx}" style="display:none;padding:12px 14px;font-size:.8rem;color:#334155;background:#ffffff;border-top:1px solid #f1f5f9;">
-          <div style="font-size:.75rem;color:#64748b;margin-bottom:6px;"><i class="fas fa-file-alt"></i> ข้อมูลที่ส่งให้ Gemini อ่าน (${s.char_count || 0} ตัวอักษร):</div>
+          <div style="font-size:.75rem;color:#64748b;margin-bottom:6px;"><i class="fas fa-file-alt"></i> ข้อมูลที่ส่งให้ระบบประมวลผล จำนวน ${s.char_count || 0} ตัวอักษร:</div>
           <div style="white-space:pre-wrap;line-height:1.6;background:#f8fafc;padding:10px 12px;border-radius:6px;border:1px solid #e2e8f0;font-family:sans-serif;max-height:220px;overflow-y:auto;">${escHtml(s.snippet || '-')}</div>
         </div>
       </div>
@@ -3438,7 +3479,7 @@ function renderDebugInspector(data, containerId) {
   const faqs = data.matched_faq || [];
   let faqsHtml = '';
   if (faqs.length === 0) {
-    faqsHtml = '<div style="color:#9ca3af;font-size:.85rem;padding:10px;background:#f9fafb;border-radius:8px;text-align:center;">ไม่มีคำถาม FAQ ที่ตรงเกณฑ์</div>';
+    faqsHtml = '<div style="color:#9ca3af;font-size:.85rem;padding:10px;background:#f9fafb;border-radius:8px;text-align:center;">ไม่มีคำถามพบบ่อยที่ตรงกับคำค้น</div>';
   } else {
     faqsHtml = faqs.map((f, idx) => `
       <div style="border:1px solid #e2e8f0;border-radius:8px;padding:10px 12px;margin-bottom:6px;background:#f8fafc;">
@@ -3464,33 +3505,33 @@ function renderDebugInspector(data, containerId) {
     <!-- Top Metadata Info -->
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;background:#f8fafc;padding:10px 14px;border-radius:10px;border:1px solid #e2e8f0;margin-bottom:14px;font-size:.8rem;color:#475569;">
       <div>
-        <strong>Log #${data.log_id || 'Live'}</strong> |
+        <strong>Log #${data.log_id || 'ปัจจุบัน'}</strong> |
         <span><i class="far fa-clock"></i> ${data.timestamp || 'สด'}</span> |
-        <span><i class="fas fa-user"></i> ${data.is_guest ? 'Guest' : 'ผู้ใช้ LINE'}</span>
+        <span><i class="fas fa-user"></i> ${data.is_guest ? 'ผู้ใช้งานทั่วไป' : 'ผู้ใช้งานผ่าน LINE'}</span>
       </div>
       <div>
-        ${isRecon ? '<span style="background:#fef3c7;color:#b45309;padding:3px 8px;border-radius:99px;font-size:.72rem;font-weight:600;"><i class="fas fa-history"></i> ตรวจสอบย้อนหลัง</span>' : '<span style="background:#dcfce7;color:#15803d;padding:3px 8px;border-radius:99px;font-size:.72rem;font-weight:600;"><i class="fas fa-check-circle"></i> บันทึกเมื่อใช้งานจริง</span>'}
+        ${isRecon ? '<span style="background:#fef3c7;color:#b45309;padding:3px 8px;border-radius:99px;font-size:.72rem;font-weight:600;"><i class="fas fa-history"></i> ตรวจสอบย้อนหลัง</span>' : ''}
       </div>
     </div>
 
     <!-- 3-Column Summary Cards -->
     <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(210px, 1fr));gap:12px;margin-bottom:16px;">
       <div style="background:${confBg};border:1px solid ${confBorder};border-radius:12px;padding:14px;text-align:center;">
-        <div style="font-size:0.75rem;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;">คะแนนความมั่นใจ</div>
+        <div style="font-size:0.75rem;font-weight:700;color:#64748b;letter-spacing:0.5px;">คะแนนความมั่นใจ</div>
         <div style="font-size:1.8rem;font-weight:800;color:${confColor};margin:4px 0;">${score}%</div>
         <span style="font-size:0.75rem;font-weight:600;color:${confColor};">${confText}</span>
       </div>
 
       <div style="background:${routeBg};border:1px solid #bfdbfe;border-radius:12px;padding:14px;text-align:center;">
-        <div style="font-size:0.75rem;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;">กระบวนการค้นหา (Pipeline Route)</div>
+        <div style="font-size:0.75rem;font-weight:700;color:#64748b;letter-spacing:0.5px;">แหล่งที่มา</div>
         <div style="font-size:1.05rem;font-weight:800;color:${routeColor};margin:8px 0 4px 0;">${routeLabel}</div>
-        <span style="font-size:0.72rem;color:#64748b;">โมเดล: ${escHtml(data.model || 'gemini-3.1-flash-lite')}</span>
+        <span style="font-size:0.72rem;color:#64748b;">โมเดลภาษา ${escHtml(data.model || 'gemini-3.1-flash-lite')}</span>
       </div>
 
       <div style="background:${faithBg};border:1px solid #bbf7d0;border-radius:12px;padding:14px;text-align:center;">
-        <div style="font-size:0.75rem;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.5px;">ความซื่อตรง (Faithfulness)</div>
+        <div style="font-size:0.75rem;font-weight:700;color:#64748b;letter-spacing:0.5px;">ความถูกต้อง</div>
         <div style="font-size:1.05rem;font-weight:800;color:${faithColor};margin:8px 0 4px 0;">${faithLabel}</div>
-        <span style="font-size:0.72rem;color:#64748b;">อัตราข้อเท็จจริงตรง Context: ${Math.round((faith.score||1)*100)}%</span>
+        <span style="font-size:0.72rem;color:#64748b;">อัตราความตรงตามเอกสารอ้างอิง ${Math.round((faith.score||1)*100)}%</span>
       </div>
     </div>
 
@@ -3513,7 +3554,7 @@ function renderDebugInspector(data, containerId) {
 
       <div style="background:#ffffff;border:1px solid #e2e8f0;border-radius:10px;padding:12px 14px;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
-          <div style="font-size:0.75rem;font-weight:700;color:#16a34a;"><i class="fas fa-robot"></i> คำตอบที่ AI ให้มา:</div>
+          <div style="font-size:0.75rem;font-weight:700;color:#16a34a;"><i class="fas fa-robot"></i> คำตอบจากระบบผู้ช่วย:</div>
           <button type="button" onclick="navigator.clipboard.writeText(decodeURIComponent('${encodeURIComponent(data.bot_answer || '')}'));alert('คัดลอกคำตอบแล้ว');" style="background:none;border:none;color:#64748b;font-size:0.75rem;cursor:pointer;"><i class="far fa-copy"></i> คัดลอก</button>
         </div>
         <div style="font-size:0.85rem;color:#1e293b;line-height:1.6;white-space:pre-wrap;">${escHtml(data.bot_answer || '-')}</div>
@@ -3528,11 +3569,11 @@ function renderDebugInspector(data, containerId) {
       </div>
       <div>
         <span style="font-size:0.75rem;color:#64748b;">สาขาวิชา: </span>
-        ${majors.length ? majors.map(m => `<span style="background:#e0f2fe;color:#0369a1;padding:2px 8px;border-radius:99px;font-size:0.72rem;font-weight:700;">${escHtml(m.toUpperCase())}</span>`).join(' ') : '<span style="font-size:0.75rem;color:#94a3b8;">ทั่วไป (ไม่ระบุสาขา)</span>'}
+        ${majors.length ? majors.map(m => `<span style="background:#e0f2fe;color:#0369a1;padding:2px 8px;border-radius:99px;font-size:0.72rem;font-weight:700;">${escHtml(m.toUpperCase())}</span>`).join(' ') : '<span style="font-size:0.75rem;color:#94a3b8;">ข้อมูลทั่วไป ไม่ระบุสาขาวิชา</span>'}
       </div>
       ${files.length ? `
         <div style="margin-left:8px;">
-          <span style="font-size:0.75rem;color:#64748b;">PDF ที่แนะนำ: </span>
+          <span style="font-size:0.75rem;color:#64748b;">เอกสาร PDF ที่แนะนำ: </span>
           ${files.map(f => `<span style="background:#fef2f2;color:#dc2626;padding:2px 8px;border-radius:99px;font-size:0.72rem;font-weight:600;"><i class="fas fa-file-pdf"></i> ${escHtml(f)}</span>`).join(' ')}
         </div>
       ` : ''}
@@ -3547,8 +3588,7 @@ function renderDebugInspector(data, containerId) {
     <!-- Retrieved Chunks Accordion -->
     <div style="margin-bottom:16px;">
       <div style="font-size:0.85rem;font-weight:700;color:#1e293b;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;">
-        <span><i class="fas fa-layer-group" style="color:#0ea5e9;"></i> เอกสารหน้าเว็บ & ระเบียบการที่ส่งให้ AI อ่าน (${sources.length} แหล่งข้อมูล)</span>
-        <span style="font-size:0.72rem;color:#64748b;">คลิกแถบเพื่อเปิดดูเนื้อหาเต็ม</span>
+        <span><i class="fas fa-layer-group" style="color:#0ea5e9;"></i> เอกสารหน้าเว็บและระเบียบการที่ส่งให้ระบบประมวลผล จำนวน ${sources.length} แหล่งข้อมูล</span>
       </div>
       ${sourcesHtml}
     </div>
@@ -3556,7 +3596,7 @@ function renderDebugInspector(data, containerId) {
     <!-- Matched FAQ -->
     <div>
       <div style="font-size:0.85rem;font-weight:700;color:#1e293b;margin-bottom:8px;">
-        <i class="fas fa-question-circle" style="color:#10b981;"></i> ข้อความ FAQ ที่ตรงเกณฑ์การค้นหา (${faqs.length} ข้อ)
+        <i class="fas fa-question-circle" style="color:#10b981;"></i> คำถามจาก FAQ ที่ถูกเรียกใช้งานจำนวน ${faqs.length} รายการ
       </div>
       ${faqsHtml}
     </div>
@@ -3696,17 +3736,14 @@ setInterval(loadStats, 60000); // refresh ทุก 1 นาที
       <!-- Dynamic content from renderDebugInspector -->
     </div>
     <div class="modal-footer"
-         style="display:flex;justify-content:space-between;align-items:center;flex-shrink:0;padding:12px 20px;background:#f9fafb;border-top:1px solid #e5e7eb;">
-      <button type="button" class="btn btn-secondary" onclick="reanalyzeCurrentLog()" style="font-size:.82rem;padding:7px 14px;">
-        <i class="fas fa-sync-alt"></i> ตรวจสอบซ้ำด้วยข้อมูลล่าสุด
-      </button>
+         style="display:flex;justify-content:flex-end;align-items:center;flex-shrink:0;padding:12px 20px;background:#f9fafb;border-top:1px solid #e5e7eb;">
       <div style="display:flex;gap:10px;align-items:center;">
         <button type="button"
                 onclick="openConvertFaqModal(currentDebugData ? currentDebugData.user_message : '', currentDebugData ? currentDebugData.bot_answer : '')"
                 style="display:inline-flex;align-items:center;gap:6px;padding:7px 16px;background:#16a34a;color:#ffffff;border:none;border-radius:6px;font-size:0.82rem;font-weight:600;cursor:pointer;transition:all .15s ease;"
                 onmouseover="this.style.background='#15803d'"
                 onmouseout="this.style.background='#16a34a'">
-          <i class="fas fa-file-signature"></i> แก้ไขและบันทึกเป็น FAQ
+          <i class="fas fa-file-signature"></i> แก้ไขและบันทึกเป็นคำถามพบบ่อย
         </button>
         <button type="button" class="btn" style="background:#e2e8f0;color:#334155;font-size:.82rem;padding:7px 16px;" onclick="closeDebugModal()">
           ปิดหน้าต่าง
@@ -3721,23 +3758,23 @@ setInterval(loadStats, 60000); // refresh ทุก 1 นาที
   <div class="modal-box" style="max-width:680px;width:95%;">
     <div class="modal-header" style="background:#f0fdf4;border-bottom:1px solid #bbf7d0;">
       <h3 style="color:#16a34a;margin:0;">
-        <i class="fas fa-file-signature"></i> แก้ไขและบันทึกเป็น FAQ
+        <i class="fas fa-file-signature"></i> แก้ไขและบันทึกเป็นคำถามพบบ่อย
       </h3>
       <button class="modal-close" onclick="closeConvertFaqModal()">&times;</button>
     </div>
     <div class="modal-body" style="padding:18px 22px;">
       <p style="font-size:0.85rem;color:#64748b;margin-bottom:14px;line-height:1.5;">
-        เมื่อบันทึกแล้ว ข้อมูลนี้จะถูกดึงเป็นคลังคำตอบที่มีความน่าเชื่อถือสูงสุด (FAQ Grounded) และถูกโหลดเข้าสู่ระบบ AI ทันที เพื่อป้องกันการตอบผิดหรือหลอนในอนาคต 100%
+        เมื่อบันทึกแล้ว ข้อมูลนี้จะถูกดึงเป็นคลังคำตอบที่มีความน่าเชื่อถือสูงสุด และถูกนำไปใช้ในระบบผู้ช่วยทันที เพื่อป้องกันการตอบคลาดเคลื่อน
       </p>
       <div style="margin-bottom:12px;">
         <label style="font-size:0.85rem;font-weight:700;color:#1e293b;display:block;margin-bottom:6px;">
-          คำถามของผู้ใช้ (Question Pattern):
+          คำถามของผู้ใช้:
         </label>
         <input type="text" id="convert-faq-question" placeholder="เช่น วิชา 02999144 อยู่ในหมวดไหน..." style="width:100%;padding:10px 14px;border:1px solid #cbd5e1;border-radius:8px;font-size:0.9rem;box-sizing:border-box;">
       </div>
       <div style="margin-bottom:14px;">
         <label style="font-size:0.85rem;font-weight:700;color:#1e293b;display:block;margin-bottom:6px;">
-          คำตอบที่ถูกต้องที่ต้องการให้ AI ตอบ (Verified Official Answer):
+          คำตอบที่ถูกต้องและเป็นทางการ:
         </label>
         <textarea id="convert-faq-answer" rows="5" placeholder="ระบุคำตอบที่ถูกต้องและเป็นทางการ..." style="width:100%;padding:10px 14px;border:1px solid #cbd5e1;border-radius:8px;font-size:0.9rem;box-sizing:border-box;resize:vertical;font-family:inherit;"></textarea>
       </div>
@@ -3748,7 +3785,7 @@ setInterval(loadStats, 60000); // refresh ทุก 1 นาที
         ยกเลิก
       </button>
       <button type="button" class="btn btn-primary" id="btn-save-convert-faq" onclick="submitConvertFaq()" style="background:#16a34a;padding:8px 20px;font-weight:600;">
-        <i class="fas fa-check"></i> บันทึกเป็น FAQ ทันที
+        <i class="fas fa-check"></i> บันทึกเป็นคำถามพบบ่อยทันที
       </button>
     </div>
   </div>
@@ -3816,7 +3853,7 @@ async function submitConvertFaq() {
         msgEl.style.background = '#fef2f2';
         msgEl.style.color = '#b91c1c';
         msgEl.style.border = '1px solid #fecaca';
-        msgEl.innerHTML = `<i class="fas fa-exclamation-circle"></i> ข้อผิดพลาด: ${data.error || 'ไม่สามารถบันทึกได้'}`;
+        msgEl.innerHTML = `<i class="fas fa-exclamation-circle"></i> ข้อผิดพลาด: ${escHtml(data.error || 'ไม่สามารถบันทึกได้')}`;
       }
     }
   } catch (err) {
@@ -3825,7 +3862,7 @@ async function submitConvertFaq() {
       msgEl.style.background = '#fef2f2';
       msgEl.style.color = '#b91c1c';
       msgEl.style.border = '1px solid #fecaca';
-      msgEl.innerHTML = `<i class="fas fa-exclamation-circle"></i> เกิดข้อผิดพลาด: ${err.message}`;
+      msgEl.innerHTML = `<i class="fas fa-exclamation-circle"></i> เกิดข้อผิดพลาด: ${escHtml(err.message)}`;
     }
   } finally {
     btn.disabled = false;

@@ -142,6 +142,7 @@
   <div class="error-msg"><i class="fas fa-exclamation-circle"></i> {{ error }}</div>
   {% endif %}
   <form method="POST" action="/admin/login">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <div class="form-group">
       <label>ชื่อผู้ใช้</label>
       <div class="input-wrap">
