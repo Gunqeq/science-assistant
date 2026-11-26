@@ -1244,6 +1244,53 @@ def evaluate_faithfulness(bot_text, context_text):
         "unsupported_facts": unsupported_facts
     }
 
+# คำแสลง/คำพูดของนิสิต → คำทางการที่ปรากฏในเอกสาร
+# ใช้ขยายคำค้นก่อนสืบค้น (prompt.py สอน AI ให้ตีความแล้ว แต่ขั้นค้นเอกสารต้องรู้ด้วย ไม่งั้นหาเอกสารไม่เจอ)
+# key ต้องเป็นตัวพิมพ์เล็ก และควรเลี่ยงคำสั้นที่ไปซ้อนกับคำอื่น (เช่น "แอด" ซ้อนกับ "แอดมิชชั่น")
+_SLANG_MAP = {
+    "ติดโปร":   ("สภาพวิทยาทัณฑ์", "วิทยาทัณฑ์", "เกรดเฉลี่ยสะสม", "gpax"),
+    "โปรต่ำ":   ("สภาพวิทยาทัณฑ์", "วิทยาทัณฑ์", "เกรดเฉลี่ยสะสม", "gpax"),
+    "โปรสูง":   ("สภาพวิทยาทัณฑ์", "วิทยาทัณฑ์", "เกรดเฉลี่ยสะสม", "gpax"),
+    "รีไทร์":   ("พ้นสภาพนิสิต", "พ้นสภาพ"),
+    "รีไทน์":   ("พ้นสภาพนิสิต", "พ้นสภาพ"),
+    "ดรอป":    ("ถอนรายวิชา",),
+    "ติดw":    ("ถอนรายวิชา",),
+    "ติด w":   ("ถอนรายวิชา",),
+    "เซคเต็ม":  ("หมู่เรียนเต็ม", "หมู่เรียน"),
+    "เซคชั่น":  ("หมู่เรียน",),
+    "เกรดรวม":  ("เกรดเฉลี่ยสะสม", "gpax"),
+    "ซัมเมอร์":  ("ภาคฤดูร้อน",),
+    "หอใน":    ("หอพักนิสิต", "หอพัก"),
+    "กยศ":     ("กองทุนเงินให้กู้ยืมเพื่อการศึกษา", "กู้ยืม"),
+}
+
+def _expand_slang(text):
+    """คืนรายการคำทางการที่ตรงกับคำแสลงใน text (ไม่ซ้ำ ตามลำดับ)"""
+    terms = []
+    for slang, formal in _SLANG_MAP.items():
+        if slang in text:
+            terms.extend(formal)
+    return list(dict.fromkeys(terms))
+
+_PLAN_YEAR_RE = re.compile(r"ปี\s*(?:ที่|ที)?\s*([1-4])(?!\d)")
+_PLAN_TERM_RE = re.compile(r"(?:เทอม|ภาค\s*(?:เรียน|การศึกษา)?\s*(?:ที่|ที)?)\s*([12])(?!\d)")
+_PLAN_STUDY_WORDS = ("วิชา", "เรียน", "แผน", "หน่วยกิต", "ลงทะเบียน", "เทอม", "ภาค")
+
+def _build_plan_header_re(msg_lower):
+    """ถ้าเป็นคำถามแผนการเรียนรายชั้นปี/เทอม คืน regex ที่จับหัวข้อ 'ปีที่ X ภาคการศึกษาที่ Y'
+    ในไฟล์หลักสูตร (ข้อความจาก PDF มักวรรณยุกต์หาย เช่น 'ปีที 2 ภาคการศกษาท 2' จึงจับแบบหลวมๆ)
+    ไม่ใช่คำถามแผนการเรียน คืน None"""
+    compact = msg_lower.replace(" ", "")
+    m_year = _PLAN_YEAR_RE.search(compact)
+    if not m_year or not any(w in compact for w in _PLAN_STUDY_WORDS):
+        return None
+    year = m_year.group(1)
+    m_term = _PLAN_TERM_RE.search(compact)
+    term = m_term.group(1) if m_term else ("1" if "ภาคต้น" in compact else "2" if "ภาคปลาย" in compact else None)
+    if term:
+        return re.compile(rf"ป\S{{0,4}}\s*{year}\s*ภาค\S{{0,14}}?\s*{term}(?!\d)")
+    return re.compile(rf"ป\S{{0,4}}\s*{year}\s*ภาค")
+
 def _perform_retrieval(user_message, history=None):
     """ดำเนินการสืบค้นข้อมูลในคลังเอกสารและ FAQ (Core RAG Retrieval)"""
     msg_lower = user_message.lower()
@@ -1286,11 +1333,16 @@ def _perform_retrieval(user_message, history=None):
     kw = [w for w in search_src.split() if len(w) > 1]
     compact = search_src.replace(" ", "")
     kw += [compact[i:i+3] for i in range(len(compact) - 2)]
+    # เพิ่มคำทางการเป็นคำเต็ม (ไม่แตกเป็น 3 ตัวอักษร เพื่อไม่ให้ไปจับคำทั่วไปอย่าง "วิทยา")
+    slang_terms = _expand_slang(msg_lower)
+    kw += slang_terms
     if prev_user_text:
         cleaned_prev = _clean_query_noise(prev_user_text)
         prev_kw = [w for w in cleaned_prev.split() if len(w) > 1]
         compact_prev = cleaned_prev.replace(" ", "")
         prev_kw += [compact_prev[i:i+3] for i in range(len(compact_prev) - 2)]
+        prev_slang = _expand_slang(prev_user_text)
+        prev_kw += prev_slang
 
         # นับเป็นคำถามต่อเนื่องเฉพาะเมื่อมีคำเชื่อมบริบทจริง หรือสั้นจนไม่มีเนื้อหาของตัวเอง กันบริบทสาขาเดิมหลุดเข้าคำถามเรื่องอื่น
         _followup_markers = (
@@ -1301,17 +1353,21 @@ def _perform_retrieval(user_message, history=None):
         is_follow_up = len(cleaned_msg) < 8 or any(k in msg_lower for k in _followup_markers)
         if is_follow_up and prev_kw:
             kw = list(dict.fromkeys(kw + prev_kw))
+            slang_terms = list(dict.fromkeys(slang_terms + prev_slang))
         else:
             kw = list(dict.fromkeys(kw))
     else:
         is_follow_up = False
         kw = list(dict.fromkeys(kw))
 
+    _slang_set = set(slang_terms)
+
     def _score(text):
         if not kw or not text:
             return 0
         t = text.lower()
-        return sum(1 for w in kw if w in t)
+        # คำทางการจากคำแสลงแม่นยำกว่า trigram ทั่วไป จึงให้น้ำหนัก 3 เท่า
+        return sum((3 if w in _slang_set else 1) for w in kw if w in t)
 
     def _has_major_kw(text: str, kw_list: tuple) -> bool:
         for k in kw_list:
@@ -1427,6 +1483,16 @@ def _perform_retrieval(user_message, history=None):
         "academic_staff", "support_staff",
     )
 
+    # คำถามแผนการเรียนรายชั้นปี/เทอม เช่น "วิชาเลือกปี2เทอม2", "ปี 3 ภาคปลายเรียนอะไร"
+    plan_header_re = _build_plan_header_re(msg_lower)
+    is_plan_q = plan_header_re is not None
+    # ผู้ใช้ตอบสาขากลับมาหลังบอทถาม (เช่น "วิทย์คอม") → ใช้ปี/เทอมจากข้อความก่อนหน้า
+    if not plan_header_re and prev_user_text and len(cleaned_msg) < 30:
+        mentions_major = any(any(k in msg_lower for k in m["keywords"]) for m in _MAJOR_MAP.values())
+        if mentions_major:
+            plan_header_re = _build_plan_header_re(prev_user_text)
+            is_plan_q = plan_header_re is not None
+
     _CURRICULUM_TXT_KWS = (
         "รายวิชา", "รหัสวิชา", "รหัส ", "สหกิจ", "ฝึกงาน", "วิชาเลือก", "วิชาบังคับ", "วิชาแกน",
         "ศึกษาทั่วไป", "หมวดวิชา", "เกรด", "เกียรตินิยม", "เทียบโอน", "โอนหน่วยกิต",
@@ -1434,6 +1500,7 @@ def _perform_retrieval(user_message, history=None):
     )
     allow_curriculum_txt = (
         bool(detected_majors or is_credit_or_struct_q or is_master_q)
+        or (is_plan_q and bool(detected_majors))
         or any(k in msg_lower for k in _CURRICULUM_TXT_KWS)
         or bool(re.search(r'\b0\d{7}\b', msg_lower))
     )
@@ -1455,6 +1522,12 @@ def _perform_retrieval(user_message, history=None):
                 continue
 
             sc = _score(content_lower) + _score(cat_lower) * 3 + _score(src_lower) * 3
+            # ดันชิ้นเอกสารที่มีหัวข้อแผนการศึกษาของปี/เทอมที่ถามขึ้นมาก่อน
+            # (ถ้าระบุสาขา ดันเฉพาะไฟล์ของสาขานั้น ไม่ให้แผนของสาขาอื่นมาแย่งที่)
+            if plan_header_re and plan_header_re.search(content_lower):
+                if not detected_majors or any(
+                        any(f in src_lower for f in _MAJOR_MAP[m]["files"]) for m in detected_majors):
+                    sc += 40
             if detected_majors:
                 is_target_major = any(_doc_matches_major(src_lower, cat_lower, m_key) for m_key in detected_majors)
                 for m_key in detected_majors:
@@ -1532,11 +1605,14 @@ def _perform_retrieval(user_message, history=None):
             filtered = top_tuition_docs + [d for d in filtered if d not in top_tuition_docs]
 
         # ป้องกันไม่ให้คำว่า "สอบถาม", "ทดสอบ", "ตรวจสอบ" ไปทริกเกอร์หมวดปฏิทินสอบ
-        cal_clean_text = re.sub(r'สอบถาม|ทดสอบ|ตรวจสอบ', ' ', msg_lower)
+        cal_clean_text = re.sub(r'สอบถาม|ทดสอบ|ตรวจสอบ', ' ', msg_lower) + " " + " ".join(slang_terms)
         _cal_kw = ("วันสอบ", "ตารางสอบ", "ห้องสอบ", "สอบกลางภาค", "สอบปลายภาค", "สอบไล่", "ขอสอบ",
                    "ปฏิทิน", "เปิดเทอม", "ปิดเทอม", "เปิดภาค", "ปิดภาค",
                    "ลงทะเบียน", "ถอน", "ดรอป", "add/drop", "add-drop", "เพิ่มวิชา", "เพิ่มรายวิชา", "ลงทะเบียนเพิ่ม", "แอดวิชา", "แอดมือ", "ขอแอด", "กำหนดการ", "เทอม", "ภาคเรียน", "วันสุดท้าย")
         has_cal_match = any(k in cal_clean_text for k in _cal_kw) or bool(re.search(r'(?<![ก-๙])สอบ(?![ก-๙])', cal_clean_text))
+        # คำถามแผนการเรียนมีคำว่า "เทอม" แต่ไม่ได้ถามปฏิทิน จึงไม่ดันเอกสารปฏิทินขึ้นมาแย่งที่
+        if plan_header_re and not any(k in msg_lower for k in ("ปฏิทิน", "สอบ", "วันสุดท้าย", "กำหนดการ", "เปิดเทอม", "ปิดเทอม")):
+            has_cal_match = False
         if has_cal_match and "ค่าเทอม" not in msg_lower:
             cal_docs = [d for d in CHAT_CONTEXT if "ปฏิทิน" in d.get("category", "")]
             rest_docs = [d for d in filtered if d not in cal_docs]
@@ -1552,6 +1628,7 @@ def _perform_retrieval(user_message, history=None):
             detected_majors or is_exec_q or is_staff_q or is_all_programs_q
             or is_credit_or_struct_q or is_master_q or is_tuition_q
             or has_cal_match or allow_curriculum_txt or allow_tcas
+            or is_plan_q or slang_terms
         )
         top_doc_score = max((doc_score_map.get(id(d), 0) for d in filtered), default=0)
         top_doc_ratio = top_doc_score / max(1, len(kw))
@@ -1609,7 +1686,7 @@ def _perform_retrieval(user_message, history=None):
     is_faq_enabled = (get_setting("faq_enabled", "true") == "true")
     if is_faq_enabled and FAQ_CONTEXT and FAQ_TOKEN_DATA:
         N = len(FAQ_CONTEXT)
-        q_ngrams = get_faq_ngrams(search_src)
+        q_ngrams = get_faq_ngrams(" ".join([search_src] + slang_terms))
         if q_ngrams:
             query_weights = {g: FAQ_IDF.get(g, math.log(N + 1)) for g in q_ngrams}
             weights_sorted = sorted(query_weights.values())
@@ -1643,6 +1720,10 @@ def _perform_retrieval(user_message, history=None):
     return {
         "kw": kw,
         "detected_majors": detected_majors,
+        "is_plan_q": is_plan_q,
+        "plan_sources": list(dict.fromkeys(
+            d.get("source", "") for d in docs_to_use
+            if plan_header_re and plan_header_re.search(d.get("content", "").lower()))),
         "docs_to_use": docs_to_use,
         "doc_score_map": doc_score_map,
         "scored_faq": scored_faq,
@@ -2088,10 +2169,23 @@ def ask_gemini(user_message, history=None, return_debug=False):
     is_all_programs_q = ret.get("is_all_programs_q", False)
 
     thai_now = get_thai_now_str()
+    # คำถามแผนการเรียนรายปี/เทอม (กฎข้อ 10)
+    #   ยังไม่รู้สาขา → ถามสาขาก่อน | รู้สาขาและเจอตาราง → ตอบรายวิชาจากตารางทันที
+    plan_note = ""
+    if ret.get("is_plan_q"):
+        if not detected_majors:
+            plan_note = ("\n[หมายเหตุระบบ] คำถามนี้เป็นคำถามแผนการเรียนรายชั้นปี/เทอม แต่ผู้ใช้ยังไม่ได้ระบุสาขาวิชา "
+                         "ให้ถามสาขาวิชากลับก่อนตามกฎข้อ 10 ห้ามตอบรายวิชาของสาขาใดๆ ในรอบนี้\n")
+        elif ret.get("plan_sources"):
+            plan_note = ("\n[หมายเหตุระบบ] คำถามนี้เป็นคำถามแผนการเรียนรายชั้นปี/เทอม และ Context ด้านบนมีตารางแผนการศึกษา"
+                         f"ของปี/เทอมที่ถามจากไฟล์: {', '.join(ret['plan_sources'])} "
+                         "ให้ตอบรายวิชา (รหัส ชื่อวิชา หน่วยกิต) จากตารางนี้ทันทีตามกฎข้อ 10 "
+                         "ห้ามตอบแค่ให้ไปตรวจสอบเอง\n")
+
     system = f"""{prompt}
 
 [วันเวลาปัจจุบัน]: {thai_now}
-{context_str}{faq_str}
+{context_str}{faq_str}{plan_note}
 ---
 รายชื่อไฟล์ PDF ที่มีในระบบ (ใช้ชื่อเหล่านี้เท่านั้น):
 {PDF_LIST_STR}

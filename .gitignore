@@ -1,13 +1,16 @@
 # Environment variables (ห้าม push ขึ้น GitHub เด็ดขาด)
 .env
 
+# Virtual environments
+venv/
+.venv/
+
 # Python cache
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 .Python
-venv/
 
 # Database (เก็บ local เท่านั้น)
 instance/
@@ -24,6 +27,10 @@ eval_results.json
 # OS
 .DS_Store
 Thumbs.db
+
+# SQLite WAL files
+*.db-wal
+*.db-shm
 
 # Document & Reports
 Document/
